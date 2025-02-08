@@ -1,5 +1,3 @@
-# YOLOR PyTorch utils
-
 import datetime
 import logging
 import math

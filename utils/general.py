@@ -1,5 +1,3 @@
-# YOLOR general utils
-
 import glob
 import logging
 import math

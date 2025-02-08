@@ -1,12 +1,9 @@
-# Google utils: https://cloud.google.com/storage/docs/reference/libraries
-
 import os
 import platform
 import subprocess
 import time
 from pathlib import Path
 
-import requests
 import torch
 
 
