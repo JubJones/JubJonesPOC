@@ -26,7 +26,7 @@ def attempt_load(weights, map_location=None):
     for w in weights if isinstance(weights, list) else [weights]:
         # Since the weight file is assumed to be local,
         # we directly load it without calling attempt_download.
-        ckpt = torch.load(w, map_location=map_location)  # load checkpoint from local path
+        ckpt = torch.load(w, map_location=map_location, weights_only=False)  # load checkpoint from local path
 
         # Depending on if 'ema' exists in the checkpoint, select the corresponding model.
         model_to_append = ckpt['ema' if ckpt.get('ema') else 'model']

@@ -1,5 +1,4 @@
 import argparse
-
 import cv2
 import numpy as np
 import torch
@@ -51,7 +50,7 @@ def letterbox(im, new_shape=(640, 640), color=(114, 114, 114), auto=True, scaleF
 
 def run(source, yolo_weights, strong_sort_weights, img_size, conf_thres, iou_thres, device, classes):
     """
-    Run detection and tracking on the provided video source.
+    Run detection and tracking on the provided video source (webcam or video file).
     """
     set_logging()
     device = torch.device(device if torch.cuda.is_available() else "cpu")
@@ -75,10 +74,10 @@ def run(source, yolo_weights, strong_sort_weights, img_size, conf_thres, iou_thr
         nn_budget=100
     )
 
-    # Open video source (webcam, file, URL, etc.)
+    # Determine if the source is a webcam index (digit) or a video file path
     cap = cv2.VideoCapture(int(source)) if source.isdigit() else cv2.VideoCapture(source)
     assert cap.isOpened(), f"Failed to open source: {source}"
-    print("Tracking started – press 'q' to quit")
+    print("Tracking started – press 'q' to quit.")
 
     while True:
         ret, frame = cap.read()
@@ -87,7 +86,7 @@ def run(source, yolo_weights, strong_sort_weights, img_size, conf_thres, iou_thr
 
         img0 = frame.copy()
 
-        # Preprocess image: letterbox resize, convert BGR→RGB, transpose to CHW format
+        # Preprocess image: letterbox resize, convert BGR→RGB, and transpose to CHW format
         img, ratio, dwdh = letterbox(img0, new_shape=imgsz)
         img = img[:, :, ::-1].transpose(2, 0, 1)
         img = np.ascontiguousarray(img)
@@ -117,7 +116,7 @@ def run(source, yolo_weights, strong_sort_weights, img_size, conf_thres, iou_thr
                 detections.append([x1.item(), y1.item(), x2.item(), y2.item(), conf.item()])
                 class_ids.append(int(cls.item()))
 
-        # If detections exist, convert bbox format and update tracker
+        # Update tracker and overlay bounding boxes if detections exist
         if len(detections):
             detections = np.array(detections)
             class_ids = np.array(class_ids)
@@ -128,10 +127,9 @@ def run(source, yolo_weights, strong_sort_weights, img_size, conf_thres, iou_thr
             bbox_xywh = np.zeros_like(bbox_xyxy)
             bbox_xywh[:, 0] = (bbox_xyxy[:, 0] + bbox_xyxy[:, 2]) / 2  # center x
             bbox_xywh[:, 1] = (bbox_xyxy[:, 1] + bbox_xyxy[:, 3]) / 2  # center y
-            bbox_xywh[:, 2] = bbox_xyxy[:, 2] - bbox_xyxy[:, 0]  # width
-            bbox_xywh[:, 3] = bbox_xyxy[:, 3] - bbox_xyxy[:, 1]  # height
+            bbox_xywh[:, 2] = bbox_xyxy[:, 2] - bbox_xyxy[:, 0]          # width
+            bbox_xywh[:, 3] = bbox_xyxy[:, 3] - bbox_xyxy[:, 1]          # height
 
-            # Now update the tracker with the required arguments: bbox_xywh, confidences, class_ids, and the original image.
             outputs = tracker.update(bbox_xywh, confidences, class_ids, img0)
             if outputs is not None:
                 for output in outputs:
@@ -154,20 +152,34 @@ def parse_args():
     parser = argparse.ArgumentParser(
         description="POC for detecting and tracking people using YOLOv7 and StrongSORT"
     )
-    parser.add_argument('--source', type=str, default='0', help="Video source: webcam (0), file, URL, etc.")
-    parser.add_argument('--yolo-weights', type=str, default='yolov7.pt', help="Path to YOLOv7 weights")
-    parser.add_argument('--strong-sort-weights', type=str, default='osnet_x0_25_msmt17.pt',
-                        help="Path to StrongSORT (OSNet) weights")
-    parser.add_argument('--img-size', type=int, default=640, help="Inference image size")
-    parser.add_argument('--conf-thres', type=float, default=0.25, help="Object confidence threshold")
-    parser.add_argument('--iou-thres', type=float, default=0.45, help="IOU threshold for NMS")
-    parser.add_argument('--device', default='cuda:0', help="CUDA device (e.g. 0 or 'cpu')")
-    parser.add_argument('--classes', nargs='+', type=int, default=[0],
-                        help="Filter detections by class index; for people use 0 (COCO indexing)")
+    parser.add_argument(
+        "--source",
+        type=str,
+        default="0",
+        help="Video source: webcam (e.g., 0) or video file path.",
+    )
+    parser.add_argument("--yolo-weights", type=str, default="yolov7.pt", help="Path to YOLOv7 weights")
+    parser.add_argument(
+        "--strong-sort-weights",
+        type=str,
+        default="osnet_x0_25_msmt17.pt",
+        help="Path to StrongSORT (OSNet) weights",
+    )
+    parser.add_argument("--img-size", type=int, default=640, help="Inference image size")
+    parser.add_argument("--conf-thres", type=float, default=0.25, help="Object confidence threshold")
+    parser.add_argument("--iou-thres", type=float, default=0.45, help="IOU threshold for NMS")
+    parser.add_argument("--device", default="cuda:0", help="CUDA device (e.g. 0 or 'cpu')")
+    parser.add_argument(
+        "--classes",
+        nargs="+",
+        type=int,
+        default=[0],
+        help="Filter detections by class index; for people use 0 (COCO indexing)",
+    )
     return parser.parse_args()
 
 
-if __name__ == '__main__':
+if __name__ == "__main__":
     args = parse_args()
     run(
         args.source,
@@ -177,5 +189,5 @@ if __name__ == '__main__':
         args.conf_thres,
         args.iou_thres,
         args.device,
-        args.classes
+        args.classes,
     )
