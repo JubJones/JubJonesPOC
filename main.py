@@ -3,11 +3,11 @@ import cv2
 import numpy as np
 import torch
 # YOLOv7 imports
-from yolov7.models.experimental import attempt_load
+from modeling.yolov7.models.experimental import attempt_load
 # StrongSORT import
-from strong_sort.strong_sort import StrongSORT
-from utils.general import non_max_suppression, scale_coords, check_img_size, set_logging
-from utils.plots import plot_one_box
+from modeling.strong_sort.strong_sort import StrongSORT
+from modeling.utils.general import non_max_suppression, scale_coords, check_img_size, set_logging
+from modeling.utils.plots import plot_one_box
 
 
 def letterbox(im, new_shape=(640, 640), color=(114, 114, 114), auto=True, scaleFill=False, scaleup=True):

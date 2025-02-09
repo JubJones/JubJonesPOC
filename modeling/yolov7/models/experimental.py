@@ -1,7 +1,7 @@
 import torch
 import torch.nn as nn
 
-from yolov7.models.common import Conv
+from modeling.yolov7.models.common import Conv
 
 
 class Ensemble(nn.ModuleList):

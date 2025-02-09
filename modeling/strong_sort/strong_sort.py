@@ -1,10 +1,10 @@
 import numpy as np
 import torch
 
-from strong_sort.sort.nn_matching import NearestNeighborDistanceMetric
-from strong_sort.sort.detection import Detection
-from strong_sort.sort.tracker import Tracker
-from strong_sort.reid_multibackend import ReIDDetectMultiBackend
+from modeling.strong_sort.sort.nn_matching import NearestNeighborDistanceMetric
+from modeling.strong_sort.sort.detection import Detection
+from modeling.strong_sort.sort.tracker import Tracker
+from modeling.strong_sort.reid_multibackend import ReIDDetectMultiBackend
 
 __all__ = ['StrongSORT']
 
