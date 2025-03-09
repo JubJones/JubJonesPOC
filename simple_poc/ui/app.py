@@ -17,7 +17,7 @@ class PersonTrackerApp:
             with gr.Row():
                 with gr.Column(scale=1):
                     video_input = gr.Video(label="Input Video")
-                    video_path = gr.Textbox(label="Or enter video path", value="test.avi")
+                    video_path = gr.Textbox(label="Or enter video path", value="/Users/krittinsetdhavanich/Downloads/JubJonesPOC/test.avi")
 
                     with gr.Row():
                         start_btn = gr.Button("Start Tracking")
