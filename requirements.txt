@@ -18,3 +18,4 @@ tqdm>=4.41.0
 protobuf<4.21.3
 torchreid
 ultralytics
+gradio
