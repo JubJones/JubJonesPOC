@@ -1,11 +1,6 @@
-from ui.app import PersonTrackerApp
-
-
-def main():
-    app = PersonTrackerApp(model_path="yolo11n.pt")
-    demo = app.build_ui()
-    demo.launch(share=True)
-
+from ui.app import MTMMCTrackerApp
 
 if __name__ == "__main__":
-    main()
+    app = MTMMCTrackerApp(model_path="yolo11n.pt")
+    demo = app.build_ui()
+    demo.launch(share=True)

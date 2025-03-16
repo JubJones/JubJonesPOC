@@ -1,4 +1,5 @@
 import os
+
 import cv2
 import gradio as gr
 import numpy as np
@@ -110,7 +111,6 @@ class MTMMCTrackerApp:
         self.gt_files = gt_path
         self.current_frame_index = 0
         self.paused = False
-        self._load_all_ground_truth()
 
         if not self.camera_dirs:
             return "Error: No camera directories found", gr.update(), gr.update(value=True), None, None, ""
@@ -155,17 +155,21 @@ class MTMMCTrackerApp:
         return self.tracker.select_person(int(track_id))
 
     def _process_multiple_frames(self, frames):
-        gt_boxes, track_ids = self._get_ground_truth(self.current_frame_index)
-        self.tracker.current_boxes = gt_boxes
-        self.tracker.current_track_ids = track_ids
-        return self.tracker.process_multiple_frames(frames, self.paused)
+        person_crops, map_img = self.tracker.process_multiple_frames(frames, self.paused)
+        print(f"Type of person_crops: {type(person_crops)}")
+        if isinstance(person_crops, dict):
+            for key, value in person_crops.items():
+                print(f"Type of person_crops[{key}]: {type(value)}")
+        return person_crops, map_img
 
     def _load_frames(self, frame_index):
         frames = {}
         for cam_dir in self.camera_dirs:
             image_path = os.path.join(cam_dir, 'rgb', f'{frame_index:06d}.jpg')
             if os.path.exists(image_path):
-                frames[cam_dir.split('/')[-1]] = cv2.imread(image_path)
+                img = cv2.imread(image_path)
+                print(f"Type of loaded image from {image_path}: {type(img)}")
+                frames[cam_dir.split('/')[-1]] = img
         return frames
 
     def _combine_frames(self, frames):
@@ -193,27 +197,3 @@ class MTMMCTrackerApp:
 
         return combined_image
 
-    def _load_all_ground_truth(self):
-        self.gt_data = {}
-        with open(self.gt_files, 'r') as f:
-            for line in f:
-                parts = line.strip().split(',')
-                frame_id, obj_id, x1, y1, w, h = int(parts[0]), int(parts[1]), float(parts[2]), float(
-                    parts[3]), float(parts[4]), float(parts[5])
-                if frame_id not in self.gt_data:
-                    self.gt_data[frame_id] = []
-                self.gt_data[frame_id].append((obj_id, np.array([x1, y1, w, h])))
-
-    def _get_ground_truth(self, frame_id):
-        boxes = []
-        track_ids = []
-        if frame_id in self.gt_data:
-            for obj_id, box in self.gt_data[frame_id]:
-                boxes.append(box)
-                track_ids.append(obj_id)
-        return boxes, track_ids
-
-if __name__ == "__main__":
-    app = MTMMCTrackerApp(model_path="yolo11n.pt")
-    demo = app.build_ui()
-    demo.launch(share=True)

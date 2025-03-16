@@ -23,11 +23,11 @@ class PersonTracker:
         self.map_height: int = map_height
 
         self.selected_track_id: Optional[int] = None
-        self.current_boxes: List[np.ndarray] = []  # [x, y, width, height] format
-        self.current_track_ids: List[int] = []
+        self.current_boxes: Dict[str, List[np.ndarray]] = {}  # Key: camera_id
+        self.current_track_ids: Dict[str, List[int]] = {}  # Key: camera_id
 
         # Dictionary mapping track_id to cropped person image
-        self.person_crops: Dict[int, np.ndarray] = {}  # 1: array([[[255, 240, 230], [254, 239, 229], ...]
+        self.person_crops: Dict[str, Dict[int, np.ndarray]] = {}
 
         # Homography matrix (initialized when first frame is processed)
         self.H: Optional[np.ndarray] = None
@@ -48,14 +48,17 @@ class PersonTracker:
         self.selected_track_id = track_id
         return f"Selected person {track_id}"
 
-    def update_person_crops(self, frame: np.ndarray) -> None:
-        """Extract and store cropped images of each detected person."""
+    def update_person_crops(self, frame: np.ndarray, camera_id: str = '') -> None:
         current_ids: Set[int] = set()
 
-        for box, track_id in zip(self.current_boxes, self.current_track_ids):
+        boxes = self.current_boxes.get(camera_id, [])
+        track_ids = self.current_track_ids.get(camera_id, [])
+
+        for box, track_id in zip(boxes, track_ids):
             current_ids.add(track_id)
 
-            # Extract bounding box coordinates (center x,y,width,height to top-left and bottom-right)
+        # Extract bounding box coordinates (center x,y,width,height to top-left and bottom-right)
+        for box, track_id in zip(boxes, track_ids):
             x, y, w, h = box
             x1, y1 = int(x - w / 2), int(y - h / 2)  # Top-left corner
             x2, y2 = int(x + w / 2), int(y + h / 2)  # Bottom-right corner
@@ -76,17 +79,21 @@ class PersonTracker:
                 crop_resized = cv2.resize(crop, (crop_width, target_height))
 
                 # Store the cropped image
-                self.person_crops[track_id] = crop_resized
+                if camera_id not in self.person_crops:
+                    self.person_crops[camera_id] = {}
+                self.person_crops[camera_id][track_id] = crop_resized
 
         # Remove crops for people no longer detected (except selected person)
-        ids_to_remove = [id for id in self.person_crops.keys() if id not in current_ids]
-        for id in ids_to_remove:
-            # Keep the selected person's crop even if temporarily not detected
-            if id != self.selected_track_id:
-                self.person_crops.pop(id, None)
+        if camera_id in self.person_crops:
+            ids_to_remove = [id for id in self.person_crops[camera_id].keys() if id not in current_ids]
+            for id in ids_to_remove:
+                # Keep the selected person's crop even if temporarily not detected
+                if id != self.selected_track_id:
+                    if camera_id in self.person_crops:
+                        self.person_crops[camera_id].pop(id, None)
 
-    def process_frame(self, frame: np.ndarray, paused: bool = False) -> Tuple[Optional[np.ndarray], Optional[np.ndarray]]:
-        """Process a video frame, run detection if not paused, and return visualizations."""
+    def process_frame(self, frame: np.ndarray, paused: bool = False, camera_id: str = '') -> Tuple[
+        Optional[np.ndarray], Optional[np.ndarray]]:
         if frame is None:
             return None, None
 
@@ -98,33 +105,34 @@ class PersonTracker:
             )
 
         if not paused:
-            # Run YOLO tracking on the frame
             results = self.model.track(frame, persist=True)
 
-            # Extract detection results if tracking IDs are available
             if hasattr(results[0].boxes, 'id') and results[0].boxes.id is not None:
-                self.current_boxes = results[0].boxes.xywh.cpu()  # x,y,width,height format
-                self.current_track_ids = results[0].boxes.id.int().cpu().tolist()
-                self.update_person_crops(frame)
+                print("Current_boxes: ", self.current_boxes, type(self.current_boxes))
+                self.current_boxes[camera_id] = results[0].boxes.xywh.cpu().tolist()
+                self.current_track_ids[camera_id] = results[0].boxes.id.int().cpu().tolist()
+                self.update_person_crops(frame, camera_id)
 
-        # Create visualizations
-        annotated_frame = self.create_annotated_frame(frame.copy())
+        annotated_frame = self.create_annotated_frame(frame.copy(), camera_id)
         map_img = create_map_visualization(
             self.map_width, self.map_height, self.dst_points,
-            self.current_boxes, self.current_track_ids,
+            self.current_boxes.get(camera_id, []),
+            self.current_track_ids.get(camera_id, []),
             self.track_history, self.H, self.selected_track_id
         )
 
         return annotated_frame, map_img
 
-    def create_annotated_frame(self, frame: np.ndarray) -> np.ndarray:
-        """Draw bounding boxes and tracking info on the input frame."""
+    def create_annotated_frame(self, frame: np.ndarray, camera_id: str = '') -> np.ndarray:
         # Draw region of interest polygon
         cv2.polylines(frame, [self.src_points.astype(np.int32).reshape((-1, 1, 2))],
                       True, (0, 255, 255), 2)
 
-        # Process each tracked person
-        for box, track_id in zip(self.current_boxes, self.current_track_ids):
+        # Process each tracked person for this camera
+        boxes = self.current_boxes.get(camera_id, [])
+        track_ids = self.current_track_ids.get(camera_id, [])
+
+        for box, track_id in zip(boxes, track_ids):
             # Skip if we're focusing on a selected person and this isn't them
             if self.selected_track_id is not None and track_id != self.selected_track_id:
                 continue
@@ -153,26 +161,33 @@ class PersonTracker:
         return frame
 
     def process_multiple_frames(self, frames: Dict[str, np.ndarray], paused: bool = False) -> Tuple[
-            Dict[str, np.ndarray], Optional[np.ndarray]]:
-        """Process multiple frames from different cameras and return visualizations."""
+        Dict[str, np.ndarray], Optional[np.ndarray]]:
         annotated_frames = {}
-        combined_boxes = []
-        combined_track_ids = []
+        combined_boxes = {}
+        combined_track_ids = {}
 
         for camera_id, frame in frames.items():
-            annotated_frame, _ = self.process_frame(frame, paused)
+            if camera_id not in combined_boxes:
+                combined_boxes[camera_id] = []
+                combined_track_ids[camera_id] = []
+
+            annotated_frame, _ = self.process_frame(frame, paused, camera_id)
             annotated_frames[camera_id] = annotated_frame
 
-            if self.current_boxes is not None and self.current_track_ids is not None:
-                combined_boxes.extend(self.current_boxes)
-                combined_track_ids.extend(self.current_track_ids)
+            # Append the current boxes and track_ids for this camera
+            if camera_id in self.current_boxes:
+                combined_boxes[camera_id].extend(self.current_boxes[camera_id])
+            if camera_id in self.current_track_ids:
+                combined_track_ids[camera_id].extend(self.current_track_ids[camera_id])
 
+        # Update current_boxes and current_track_ids for all cameras
         self.current_boxes = combined_boxes
         self.current_track_ids = combined_track_ids
 
         map_img = create_map_visualization(
             self.map_width, self.map_height, self.dst_points,
-            self.current_boxes, self.current_track_ids,
+            [box for boxes in self.current_boxes.values() for box in boxes],
+            [track_id for ids in self.current_track_ids.values() for track_id in ids],
             self.track_history, self.H, self.selected_track_id
         )
 
