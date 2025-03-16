@@ -1,7 +1,8 @@
-import gradio as gr
 import os
 import cv2
+import gradio as gr
 import numpy as np
+
 from simple_poc.tracking.tracker import PersonTracker
 from simple_poc.ui.gallery import create_gallery_html
 
@@ -10,11 +11,11 @@ class MTMMCTrackerApp:
     def __init__(self, model_path="yolo11n.pt"):
         self.tracker = PersonTracker(model_path)
         self.dataset_path = None
-        self.image_files = []
-        self.gt_files = None  # Changed to a single file path
+        self.camera_dirs = []
+        self.gt_files = None
         self.current_frame_index = 0
         self.paused = True
-        self.gt_data = {}  # Store ground truth data from gt.txt
+        self.gt_data = {}
 
     def build_ui(self):
         with gr.Blocks() as demo:
@@ -22,7 +23,7 @@ class MTMMCTrackerApp:
 
             with gr.Row():
                 with gr.Column(scale=1):
-                    dataset_path = gr.Textbox(label="Dataset Path", value="/path/to/MTMMC/train/train/s01/c01/rgb")
+                    dataset_path = gr.Textbox(label="Dataset Path", value="/Volumes/One Touch/MTMMC/train/train/s01/")
                     start_btn = gr.Button("Start Tracking")
                     pause_checkbox = gr.Checkbox(label="Pause", value=True)
                     frame_slider = gr.Slider(minimum=0, maximum=100, step=1, value=0, label="Frame Position")
@@ -102,26 +103,27 @@ class MTMMCTrackerApp:
         return demo
 
     def _on_start(self, dataset_path):
-        self.dataset_path = f"{dataset_path}"
-        self.image_files = sorted(
-            [os.path.join(dataset_path, f) for f in os.listdir(dataset_path) if f.endswith('.jpg')])
-        gt_path = dataset_path.replace('rgb', 'gt')
-        self.gt_files = gt_path + "/gt.txt"
+        self.dataset_path = dataset_path
+        self.camera_dirs = sorted([os.path.join(dataset_path, d) for d in os.listdir(dataset_path) if
+                                   os.path.isdir(os.path.join(dataset_path, d)) and d.startswith('c')])
+        gt_path = os.path.join(self.camera_dirs[0].replace('rgb', 'gt'), "gt", 'gt.txt')
+        self.gt_files = gt_path
         self.current_frame_index = 0
         self.paused = False
         self._load_all_ground_truth()
 
-        if not self.image_files:
-            return "Error: No images found", gr.update(), gr.update(value=True), None, None, ""
+        if not self.camera_dirs:
+            return "Error: No camera directories found", gr.update(), gr.update(value=True), None, None, ""
 
-        image = cv2.imread(self.image_files[0])
-        annotated_frame, map_img = self._process_frame(image)
+        frames = self._load_frames(0)
+        annotated_frames, map_img = self._process_multiple_frames(frames)
+        output_image = self._combine_frames(annotated_frames)
 
         return (
             "Dataset loaded and tracking started",
-            gr.update(maximum=len(self.image_files) - 1, value=0),
+            gr.update(maximum=len(os.listdir(os.path.join(self.camera_dirs[0], 'rgb'))) - 1, value=0),
             gr.update(value=False),
-            annotated_frame,
+            output_image,
             map_img,
             create_gallery_html(self.tracker.person_crops, self.tracker.selected_track_id)
         )
@@ -132,12 +134,14 @@ class MTMMCTrackerApp:
 
     def _on_frame_change(self, frame_index):
         self.current_frame_index = frame_index
-        image = cv2.imread(self.image_files[frame_index])
-        annotated_frame, map_img = self._process_frame(image)
-        return annotated_frame, map_img, create_gallery_html(self.tracker.person_crops, self.tracker.selected_track_id)
+        frames = self._load_frames(frame_index)
+        annotated_frames, map_img = self._process_multiple_frames(frames)
+        output_image = self._combine_frames(annotated_frames)
+        return output_image, map_img, create_gallery_html(self.tracker.person_crops, self.tracker.selected_track_id)
 
     def _on_next_frame(self, frame_slider):
-        self.current_frame_index = min(self.current_frame_index + 1, len(self.image_files) - 1)
+        self.current_frame_index = min(self.current_frame_index + 1,
+                                       len(os.listdir(os.path.join(self.camera_dirs[0], 'rgb'))) - 1)
         return gr.update(value=self.current_frame_index), f"Advanced to frame {self.current_frame_index}"
 
     def _on_clear_selection(self):
@@ -150,11 +154,44 @@ class MTMMCTrackerApp:
     def _on_track_person(self, track_id):
         return self.tracker.select_person(int(track_id))
 
-    def _process_frame(self, frame):
+    def _process_multiple_frames(self, frames):
         gt_boxes, track_ids = self._get_ground_truth(self.current_frame_index)
         self.tracker.current_boxes = gt_boxes
         self.tracker.current_track_ids = track_ids
-        return self.tracker.process_frame(frame, self.paused)
+        return self.tracker.process_multiple_frames(frames, self.paused)
+
+    def _load_frames(self, frame_index):
+        frames = {}
+        for cam_dir in self.camera_dirs:
+            image_path = os.path.join(cam_dir, 'rgb', f'{frame_index:06d}.jpg')
+            if os.path.exists(image_path):
+                frames[cam_dir.split('/')[-1]] = cv2.imread(image_path)
+        return frames
+
+    def _combine_frames(self, frames):
+        if not frames:
+            return None
+
+        # Combine frames into a single image (e.g., grid layout)
+        num_cameras = len(frames)
+        if num_cameras == 1:
+            return list(frames.values())[0]
+
+        # Basic grid layout (adjust as needed)
+        rows = int(np.ceil(np.sqrt(num_cameras)))
+        cols = int(np.ceil(num_cameras / rows))
+
+        height, width, _ = list(frames.values())[0].shape
+        combined_image = np.zeros((rows * height, cols * width, 3), dtype=np.uint8)
+        camera_index = 0
+        for i in range(rows):
+            for j in range(cols):
+                if camera_index < num_cameras:
+                    camera_id = list(frames.keys())[camera_index]
+                    combined_image[i * height:(i + 1) * height, j * width:(j + 1) * width, :] = frames[camera_id]
+                    camera_index += 1
+
+        return combined_image
 
     def _load_all_ground_truth(self):
         self.gt_data = {}
@@ -175,7 +212,6 @@ class MTMMCTrackerApp:
                 boxes.append(box)
                 track_ids.append(obj_id)
         return boxes, track_ids
-
 
 if __name__ == "__main__":
     app = MTMMCTrackerApp(model_path="yolo11n.pt")

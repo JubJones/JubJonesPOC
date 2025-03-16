@@ -151,3 +151,29 @@ class PersonTracker:
                     cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 0, 255), 2)
 
         return frame
+
+    def process_multiple_frames(self, frames: Dict[str, np.ndarray], paused: bool = False) -> Tuple[
+            Dict[str, np.ndarray], Optional[np.ndarray]]:
+        """Process multiple frames from different cameras and return visualizations."""
+        annotated_frames = {}
+        combined_boxes = []
+        combined_track_ids = []
+
+        for camera_id, frame in frames.items():
+            annotated_frame, _ = self.process_frame(frame, paused)
+            annotated_frames[camera_id] = annotated_frame
+
+            if self.current_boxes is not None and self.current_track_ids is not None:
+                combined_boxes.extend(self.current_boxes)
+                combined_track_ids.extend(self.current_track_ids)
+
+        self.current_boxes = combined_boxes
+        self.current_track_ids = combined_track_ids
+
+        map_img = create_map_visualization(
+            self.map_width, self.map_height, self.dst_points,
+            self.current_boxes, self.current_track_ids,
+            self.track_history, self.H, self.selected_track_id
+        )
+
+        return annotated_frames, map_img
