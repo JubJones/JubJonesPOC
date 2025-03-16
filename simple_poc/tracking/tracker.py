@@ -81,7 +81,8 @@ class PersonTracker:
                 # Store the cropped image
                 if camera_id not in self.person_crops:
                     self.person_crops[camera_id] = {}
-                self.person_crops[camera_id][track_id] = crop_resized
+                # Convert crop to RGB before storing
+                self.person_crops[camera_id][track_id] = cv2.cvtColor(crop_resized, cv2.COLOR_BGR2RGB)  # FIX: Convert to RGB
 
         # Remove crops for people no longer detected (except selected person)
         if camera_id in self.person_crops:
@@ -108,7 +109,6 @@ class PersonTracker:
             results = self.model.track(frame, persist=True)
 
             if hasattr(results[0].boxes, 'id') and results[0].boxes.id is not None:
-                print("Current_boxes: ", self.current_boxes, type(self.current_boxes))
                 self.current_boxes[camera_id] = results[0].boxes.xywh.cpu().tolist()
                 self.current_track_ids[camera_id] = results[0].boxes.id.int().cpu().tolist()
                 self.update_person_crops(frame, camera_id)
@@ -120,6 +120,10 @@ class PersonTracker:
             self.current_track_ids.get(camera_id, []),
             self.track_history, self.H, self.selected_track_id
         )
+
+        # Convert annotated_frame and map_img to RGB before returning.
+        annotated_frame = cv2.cvtColor(annotated_frame, cv2.COLOR_BGR2RGB) if annotated_frame is not None else None  # FIX
+        map_img = cv2.cvtColor(map_img, cv2.COLOR_BGR2RGB) if map_img is not None else None # FIX
 
         return annotated_frame, map_img
 
