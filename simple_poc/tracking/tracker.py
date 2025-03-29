@@ -287,10 +287,9 @@ class PersonTracker:
             is_selected = (track_id == self.selected_track_id and track_id != -1)  # Cannot select -1
 
             # Use different colors and thicknesses
-            color = (0, 0, 255) if is_selected else (0, 255, 0)  # Red if selected, green otherwise
-            # Make placeholder boxes maybe different color? e.g., blue
+            color = (0, 0, 255) if is_selected else (0, 255, 0)
             if track_id == -1:
-                color = (255, 0, 0)  # Blue for placeholder detections
+                color = (255,  0, 0)  # Blue for placeholder detections (BGR)
             thickness = 3 if is_selected else 2
 
             # Draw bounding box
