@@ -56,7 +56,8 @@ class PersonTracker:
         if isinstance(track_id, str) and track_id.startswith("det_"): return "Cannot select simple detections."
         if track_id is None:
             if self.selected_track_id is not None:
-                deselected_id = self.selected_track_id; self.selected_track_id = None
+                deselected_id = self.selected_track_id
+                self.selected_track_id = None
                 return f"Deselected person {deselected_id}"
             else: return "No person was selected."
         if not isinstance(track_id, int): return "Invalid ID format for selection."

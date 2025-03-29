@@ -12,7 +12,7 @@ from simple_poc.tracking.map import compute_homography, create_map_visualization
 
 class MTMMCTrackerApp:
 
-    def __init__(self, model_path="yolov8n.pt", model_type='yolo', map_width=400, map_height=600):
+    def __init__(self, model_path="yolov11l.pt", model_type='yolo', map_width=400, map_height=600):
         self.model_path = model_path
         self.model_type = model_type
         self.map_width = map_width
