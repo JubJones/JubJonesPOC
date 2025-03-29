@@ -1,8 +1,13 @@
 from ui.app import MTMMCTrackerApp
 
+
 if __name__ == "__main__":
-    # app = MTMMCTrackerApp(model_path="yolov11l.pt")
-    app = MTMMCTrackerApp(model_path="yolov9e.pt")
-    # app = MTMMCTrackerApp(model_path="rtdetr-x.pt") # Don't forget to swap in the tracker.py
+    # Example: Choose the model type and path here
+    # app = MTMMCTrackerApp(model_path="yolov11x.pt", model_type='yolo')
+    # app = MTMMCTrackerApp(model_path="yolov9e.pt", model_type='yolo')
+    # app = MTMMCTrackerApp(model_path="rtdetr-x.pt", model_type='rtdetr')
+    app = MTMMCTrackerApp(model_path="fasterrcnn_resnet50_fpn", model_type='fasterrcnn') # Path ignored for default torchvision weights
+
     demo = app.build_ui()
-    demo.launch(share=True)
+    # Set share=True if needed for external access
+    demo.launch(share=False)
