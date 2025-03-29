@@ -1,15 +1,11 @@
-# ================================================
-# File: simple_poc/ui/app.py
-# ================================================
 import os
 import cv2
 import gradio as gr
 import numpy as np
-from collections import defaultdict # Added import
+from collections import defaultdict
 
 from simple_poc.tracking.tracker import PersonTracker
 from simple_poc.ui.gallery import create_gallery_html
-# Import map functions directly needed for GT mode map generation
 from simple_poc.tracking.map import compute_homography, create_map_visualization
 
 
@@ -234,10 +230,9 @@ class MTMMCTrackerApp:
                 found_gt = True
         if self.mode == "Ground Truth" and not found_gt:
              print("Warning: Could not load any gt.txt files for Ground Truth mode.")
-             # Continue anyway, will just show empty maps/frames
 
         self.current_frame_index = 0
-        self.paused = True # Start paused
+        self.paused = True
 
         # --- Determine max frames & Calculate Initial Homography ---
         max_frames = 0

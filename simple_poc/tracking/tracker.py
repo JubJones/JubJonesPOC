@@ -4,6 +4,7 @@ from typing import Dict, List, Optional, Set, Tuple, Union
 import cv2
 import numpy as np
 from ultralytics import YOLO
+# from ultralytics import RTDETR
 
 from simple_poc.tracking.map import (
     compute_homography, create_map_visualization
@@ -16,6 +17,7 @@ class PersonTracker:
     def __init__(self, model_path: str, map_width: int = 600, map_height: int = 800):
         """Initialize tracker with YOLO model and tracking parameters."""
         self.model = YOLO(model_path)
+        # self.model = RTDETR(model_path)
 
         # Dictionary mapping track_id to list of (x,y) position history
         self.track_history: Dict[int, List[Tuple[float, float]]] = defaultdict(list)
@@ -106,7 +108,7 @@ class PersonTracker:
             )
 
         if not paused:
-            results = self.model.track(frame, persist=True)
+            results = self.model.track(frame, persist=True, classes=0)
 
             if hasattr(results[0].boxes, 'id') and results[0].boxes.id is not None:
                 self.current_boxes[camera_id] = results[0].boxes.xywh.cpu().tolist()
