@@ -5,8 +5,8 @@ import cv2
 import numpy as np
 import torch
 import torchvision
-from torchvision.models.detection import FasterRCNN_ResNet50_FPN_Weights
 from PIL import Image
+from torchvision.models.detection import FasterRCNN_ResNet50_FPN_Weights
 from ultralytics import YOLO, RTDETR
 
 
@@ -57,7 +57,7 @@ class YoloStrategy(DetectionTrackingStrategy):
 
         try:
             # classes=0 filters for the 'person' class assuming COCO training
-            results = self.model.track(frame, persist=True, classes=0, verbose=False)
+            results = self.model.track(frame, persist=False, classes=0, verbose=False)
 
             if results and results[0].boxes is not None:
                 boxes_xywh = results[0].boxes.xywh.cpu().numpy().tolist() if results[0].boxes.xywh is not None else []
@@ -90,7 +90,7 @@ class RTDetrStrategy(DetectionTrackingStrategy):
         print(f"Initializing RT-DETR strategy with model: {model_path}")
         try:
             self.model = RTDETR(model_path)
-             # Perform a dummy inference to check model loading
+            # Perform a dummy inference to check model loading
             dummy_frame = np.zeros((640, 640, 3), dtype=np.uint8)
             self.model.predict(dummy_frame, verbose=False)
             print("RT-DETR model loaded successfully.")
@@ -104,7 +104,7 @@ class RTDetrStrategy(DetectionTrackingStrategy):
         confidences = []
 
         try:
-            results = self.model.track(frame, persist=True, classes=0, verbose=False)
+            results = self.model.track(frame, persist=False, classes=0, verbose=False)
 
             if results and results[0].boxes is not None:
                 boxes_xywh = results[0].boxes.xywh.cpu().numpy().tolist() if results[0].boxes.xywh is not None else []
@@ -113,7 +113,7 @@ class RTDetrStrategy(DetectionTrackingStrategy):
                 if results[0].boxes.id is not None:
                     track_ids = results[0].boxes.id.int().cpu().tolist()
                 else:
-                    track_ids = [-1] * len(boxes_xywh) # Placeholder IDs
+                    track_ids = [-1] * len(boxes_xywh)  # Placeholder IDs
 
                 min_len = min(len(boxes_xywh), len(track_ids), len(confidences))
                 boxes_xywh = boxes_xywh[:min_len]
@@ -139,8 +139,8 @@ class FasterRCNNStrategy(DetectionTrackingStrategy):
             self.model = torchvision.models.detection.fasterrcnn_resnet50_fpn(weights=weights)
             self.model.to(self.device)
             self.model.eval()
-            self.transforms = weights.transforms() # Get the transforms associated with the weights
-            self.person_label_index = 1 # In COCO dataset used by TorchVision default weights
+            self.transforms = weights.transforms()  # Get the transforms associated with the weights
+            self.person_label_index = 1  # In COCO dataset used by TorchVision default weights
             self.score_threshold = 0.5
             print("Faster R-CNN model loaded successfully.")
         except Exception as e:
@@ -161,7 +161,7 @@ class FasterRCNNStrategy(DetectionTrackingStrategy):
             img_pil = Image.fromarray(img_rgb_np)
 
             # Apply torchvision transforms (which expects a PIL Image)
-            input_tensor = self.transforms(img_pil) # <--- *** FIXED ***
+            input_tensor = self.transforms(img_pil)  # <--- *** FIXED ***
 
             # Add batch dimension and send to device
             input_batch = [input_tensor.to(self.device)]
