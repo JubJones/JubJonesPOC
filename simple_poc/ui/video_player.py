@@ -2,6 +2,7 @@ import cv2
 import time
 import threading
 
+
 class VideoPlayer:
     def __init__(self):
         self.state = {
@@ -11,7 +12,7 @@ class VideoPlayer:
             "playing": False,
             "video_path": None,
             "play_thread": None,
-            "stop_thread": False
+            "stop_thread": False,
         }
         self.lock = threading.Lock()  # Add lock for thread safety
 
@@ -33,7 +34,9 @@ class VideoPlayer:
     def get_frame(self, frame_index, video_path=None):
         with self.lock:
             # Handle video switching
-            if self.state["cap"] is None or (video_path and video_path != self.state["video_path"]):
+            if self.state["cap"] is None or (
+                video_path and video_path != self.state["video_path"]
+            ):
                 if not video_path:
                     return None
 
@@ -76,9 +79,7 @@ class VideoPlayer:
         self.state["playing"] = True
         self.state["stop_thread"] = False
         self.state["play_thread"] = threading.Thread(
-            target=self._play_thread_function,
-            args=(self._frame_callback,),
-            daemon=True
+            target=self._play_thread_function, args=(self._frame_callback,), daemon=True
         )
         self.state["play_thread"].start()
 
@@ -123,7 +124,9 @@ class VideoPlayer:
             was_playing = self._pause_if_playing()
 
             # Advance frame
-            next_frame = min(self.state["current_frame"] + 1, self.state["total_frames"] - 1)
+            next_frame = min(
+                self.state["current_frame"] + 1, self.state["total_frames"] - 1
+            )
             self.state["current_frame"] = next_frame
 
             # Resume if needed

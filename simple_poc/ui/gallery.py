@@ -5,8 +5,10 @@ import numpy as np
 from simple_poc.utils.visualization import img_to_base64
 
 
-def create_gallery_html(person_crops: Dict[str, Dict[Union[int, str], np.ndarray]],
-                        selected_track_id: Optional[int] = None) -> str:
+def create_gallery_html(
+    person_crops: Dict[str, Dict[Union[int, str], np.ndarray]],
+    selected_track_id: Optional[int] = None,
+) -> str:
     """
     Create HTML gallery of person thumbnails. Handles actual track IDs (int)
     and simple detection keys (str, e.g., 'det_0'). Disables selection for simple detections.
@@ -31,19 +33,24 @@ def create_gallery_html(person_crops: Dict[str, Dict[Union[int, str], np.ndarray
             all_entries.append({"cam_id": cam_id, "key": storage_key, "crop": crop_rgb})
 
     # Sort entries maybe by camera then key (string keys will sort after ints)
-    all_entries.sort(key=lambda x: (x['cam_id'], str(x['key'])))  # Convert key to str for sorting
+    all_entries.sort(
+        key=lambda x: (x["cam_id"], str(x["key"]))
+    )  # Convert key to str for sorting
 
     for entry in all_entries:
-        cam_id = entry['cam_id']
-        storage_key = entry['key']  # This is Union[int, str]
-        crop_rgb = entry['crop']
+        cam_id = entry["cam_id"]
+        storage_key = entry["key"]  # This is Union[int, str]
+        crop_rgb = entry["crop"]
 
-        if not isinstance(crop_rgb, np.ndarray) or crop_rgb.size == 0: continue
+        if not isinstance(crop_rgb, np.ndarray) or crop_rgb.size == 0:
+            continue
 
         try:
             img_base64 = img_to_base64(crop_rgb)
         except Exception as e:
-            print(f"Error converting crop to base64 for Cam {cam_id}, Key {storage_key}: {e}")
+            print(
+                f"Error converting crop to base64 for Cam {cam_id}, Key {storage_key}: {e}"
+            )
             continue
 
         is_detection = isinstance(storage_key, str) and storage_key.startswith("det_")
@@ -51,7 +58,9 @@ def create_gallery_html(person_crops: Dict[str, Dict[Union[int, str], np.ndarray
 
         # Determine selection highlight (only for actual integer track IDs)
         is_selected = is_tracked_id and (storage_key == selected_track_id)
-        border_style = "border: 3px solid red;" if is_selected else "border: 1px solid #ddd;"
+        border_style = (
+            "border: 3px solid red;" if is_selected else "border: 1px solid #ddd;"
+        )
 
         # Determine button text and state
         button_enabled = is_tracked_id  # Only enable button for actual track IDs
@@ -63,7 +72,9 @@ def create_gallery_html(person_crops: Dict[str, Dict[Union[int, str], np.ndarray
         if button_enabled:
             track_id_int = int(storage_key)  # We know it's an int here
             gradio_button_elem_id = f"track_button_{track_id_int}"
-            btn_color = "#ff6b6b" if is_selected else "#4CAF50"  # Red if selected, Green otherwise
+            btn_color = (
+                "#ff6b6b" if is_selected else "#4CAF50"
+            )  # Red if selected, Green otherwise
             btn_text = "Selected" if is_selected else "Select"
             onclick_js = f"""
                 (function() {{
@@ -74,7 +85,11 @@ def create_gallery_html(person_crops: Dict[str, Dict[Union[int, str], np.ndarray
              """
 
         # Display label appropriately
-        display_label = f"ID: {storage_key}" if is_tracked_id else f"Det: {storage_key.split('_')[-1]}"
+        display_label = (
+            f"ID: {storage_key}"
+            if is_tracked_id
+            else f"Det: {storage_key.split('_')[-1]}"
+        )
 
         gallery_html += f"""
         <div style='text-align: center; margin-bottom: 10px; padding: 5px; background-color: #f8f8f8; border-radius: 5px;'>

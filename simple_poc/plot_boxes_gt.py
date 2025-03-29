@@ -2,10 +2,11 @@ import cv2
 import os
 import re
 
+
 def sorted_alphanumeric(data):
     """Sorts a list alphanumerically."""
     convert = lambda text: int(text) if text.isdigit() else text.lower()
-    alphanum_key = lambda key: [convert(c) for c in re.split('([0-9]+)', key)]
+    alphanum_key = lambda key: [convert(c) for c in re.split("([0-9]+)", key)]
     return sorted(data, key=alphanum_key)
 
 
@@ -20,8 +21,12 @@ def display_video_with_bboxes(root_dir, scene, camera):
         camera: The camera identifier (e.g., "c01").
     """
 
-    video_path = os.path.join(root_dir, 'train', 'train', scene, camera, 'rgb')  # Path to the images
-    gt_path = os.path.join(root_dir, 'train', 'train', scene, camera, 'gt', 'gt.txt')  # Path to gt.txt
+    video_path = os.path.join(
+        root_dir, "train", "train", scene, camera, "rgb"
+    )  # Path to the images
+    gt_path = os.path.join(
+        root_dir, "train", "train", scene, camera, "gt", "gt.txt"
+    )  # Path to gt.txt
 
     # Check if paths exist
     if not os.path.isdir(video_path):
@@ -31,9 +36,9 @@ def display_video_with_bboxes(root_dir, scene, camera):
 
     # Read ground truth annotations
     annotations = {}
-    with open(gt_path, 'r') as f:
+    with open(gt_path, "r") as f:
         for line in f:
-            data = line.strip().split(',')
+            data = line.strip().split(",")
             frame_id = int(data[0])
             object_id = int(data[1])
             bbox_x = float(data[2])
@@ -43,18 +48,21 @@ def display_video_with_bboxes(root_dir, scene, camera):
 
             if frame_id not in annotations:
                 annotations[frame_id] = []
-            annotations[frame_id].append((bbox_x, bbox_y, bbox_width, bbox_height, object_id))
-
+            annotations[frame_id].append(
+                (bbox_x, bbox_y, bbox_width, bbox_height, object_id)
+            )
 
     # Get sorted list of image files
     image_files = sorted_alphanumeric(os.listdir(video_path))
 
     # Iterate through image files and display with bounding boxes
     for image_file in image_files:
-        if not image_file.endswith('.jpg'): #skip if not jpg files.
+        if not image_file.endswith(".jpg"):  # skip if not jpg files.
             continue
 
-        frame_id = int(os.path.splitext(image_file)[0])  # Extract frame ID from filename
+        frame_id = int(
+            os.path.splitext(image_file)[0]
+        )  # Extract frame ID from filename
         image_path = os.path.join(video_path, image_file)
         image = cv2.imread(image_path)
 
@@ -63,23 +71,39 @@ def display_video_with_bboxes(root_dir, scene, camera):
             continue
 
         if frame_id in annotations:
-            for bbox_x, bbox_y, bbox_width, bbox_height, object_id in annotations[frame_id]:
+            for bbox_x, bbox_y, bbox_width, bbox_height, object_id in annotations[
+                frame_id
+            ]:
                 # Draw bounding box
-                cv2.rectangle(image, (int(bbox_x), int(bbox_y)), (int(bbox_x + bbox_width), int(bbox_y + bbox_height)), (0, 255, 0), 2)
+                cv2.rectangle(
+                    image,
+                    (int(bbox_x), int(bbox_y)),
+                    (int(bbox_x + bbox_width), int(bbox_y + bbox_height)),
+                    (0, 255, 0),
+                    2,
+                )
                 # Put object ID text
-                cv2.putText(image, str(object_id), (int(bbox_x), int(bbox_y - 5)), cv2.FONT_HERSHEY_SIMPLEX, 0.9, (0, 255, 0), 2)
+                cv2.putText(
+                    image,
+                    str(object_id),
+                    (int(bbox_x), int(bbox_y - 5)),
+                    cv2.FONT_HERSHEY_SIMPLEX,
+                    0.9,
+                    (0, 255, 0),
+                    2,
+                )
 
-        cv2.imshow('Video with Bounding Boxes', image)
+        cv2.imshow("Video with Bounding Boxes", image)
 
         # Wait for a key press or a short delay to control the video speed.  25ms is good for ~30-40 FPS video.
-        if cv2.waitKey(25) & 0xFF == ord('q'):  # Press 'q' to quit
+        if cv2.waitKey(25) & 0xFF == ord("q"):  # Press 'q' to quit
             break
 
     cv2.destroyAllWindows()
 
 
-if __name__ == '__main__':
-    root_directory = 'D:\MTMMC'
-    selected_scene = 's10'
-    selected_camera = 'c16'
+if __name__ == "__main__":
+    root_directory = "D:\MTMMC"
+    selected_scene = "s10"
+    selected_camera = "c16"
     display_video_with_bboxes(root_directory, selected_scene, selected_camera)
