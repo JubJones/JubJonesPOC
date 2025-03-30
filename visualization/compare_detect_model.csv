@@ -1,0 +1,11 @@
+Model,Environment,Time (s),Detected,Ground Truth
+yolov11x,Factory,8,48,64
+yolov11x,Campus,10,82,102
+yolov11l,Factory,6,56,64
+yolov11l,Campus,8,93,102
+yolov9e,Factory,11,67,64
+yolov9e,Campus,11,92,102
+rtdetr-x,Factory,18,78,64
+rtdetr-x,Campus,19,114,102
+fasterrcnn_resnet50_fpn,Campus,31,66,102
+fasterrcnn_resnet50_fpn,Factory,33,101,64
