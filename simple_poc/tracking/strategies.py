@@ -12,7 +12,7 @@ from PIL import Image
 # from sympy.printing.tree import print_node # <--- Remove this unused import if present
 from torchvision.models.detection import FasterRCNN_ResNet50_FPN_Weights
 from ultralytics import YOLO, RTDETR
-from rfdetr import RFDETRBase # Added import for RF-DETR
+from rfdetr import RFDETRLarge # Added import for RF-DETR
 
 
 # --- (Other classes remain the same: DetectionTrackingStrategy, YoloStrategy, RTDetrStrategy, FasterRCNNStrategy) ---
@@ -255,16 +255,16 @@ class RfDetrStrategy(DetectionTrackingStrategy):
     def __init__(self, model_path: str):
         # model_path is currently ignored; RFDETRBase loads its default weights.
         print(
-            f"Initializing RF-DETR strategy (model_path '{model_path}' ignored, using RFDETRBase defaults)"
+            f"Initializing RF-DETR strategy (model_path '{model_path}' ignored, using RFDETRLarge defaults)"
         )
         try:
-            print("Attempting to load RFDETRBase...")
+            print("Attempting to load RFDETRLarge...")
             # --- Attempt to force CPU ---
             # Explicitly request CPU device if MPS fallback/native fails
             target_device = 'cpu'
-            print(f"Attempting to load RFDETRBase and force execution on device: '{target_device}'")
-            self.model = RFDETRBase() # Initialize first
-            print("RFDETRBase object created. Attempting to move model to CPU...")
+            print(f"Attempting to load RFDETRLarge and force execution on device: '{target_device}'")
+            self.model = RFDETRLarge() # Initialize first
+            print("RFDETRLarge object created. Attempting to move model to CPU...")
             try:
                 self.model.to(target_device)
                 if hasattr(self.model, 'model') and isinstance(self.model.model, torch.nn.Module):
@@ -291,11 +291,11 @@ class RfDetrStrategy(DetectionTrackingStrategy):
 
 
         except ImportError:
-             print("ERROR: Critical - Failed to import RFDETRBase. Is 'rfdetr' library installed correctly?")
+             print("ERROR: Critical - Failed to import RFDETRLarge. Is 'rfdetr' library installed correctly?")
              raise
         except Exception as e:
             # Catching the original MPS error here if forcing CPU failed or wasn't possible
-            print(f"ERROR: Critical - Failed during RFDETRBase initialization or CPU forcing: {e}")
+            print(f"ERROR: Critical - Failed during RFDETRLarge initialization or CPU forcing: {e}")
             raise # Re-throw the exception to be caught by PersonTracker
 
 
