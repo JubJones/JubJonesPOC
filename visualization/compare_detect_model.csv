@@ -7,5 +7,7 @@ yolov9e,Factory,11,67,64
 yolov9e,Campus,11,92,102
 rtdetr-x,Factory,18,78,64
 rtdetr-x,Campus,19,114,102
-fasterrcnn_resnet50_fpn,Campus,31,66,102
+rfdetr_base,Factory,8,49,64
+rfdetr_base,Campus,6,90,102
 fasterrcnn_resnet50_fpn,Factory,33,101,64
+fasterrcnn_resnet50_fpn,Campus,31,66,102

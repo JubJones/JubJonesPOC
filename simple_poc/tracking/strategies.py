@@ -1,13 +1,21 @@
+# ================================================
+# FILE: simple_poc/tracking/strategies.py
+# ================================================
 import abc
 from typing import List, Tuple
 
 import cv2
 import numpy as np
-import torch
+import torch # Ensure torch is imported
 import torchvision
 from PIL import Image
+# from sympy.printing.tree import print_node # <--- Remove this unused import if present
 from torchvision.models.detection import FasterRCNN_ResNet50_FPN_Weights
 from ultralytics import YOLO, RTDETR
+from rfdetr import RFDETRBase # Added import for RF-DETR
+
+
+# --- (Other classes remain the same: DetectionTrackingStrategy, YoloStrategy, RTDetrStrategy, FasterRCNNStrategy) ---
 
 
 class DetectionTrackingStrategy(abc.ABC):
@@ -238,4 +246,127 @@ class FasterRCNNStrategy(DetectionTrackingStrategy):
             # print(traceback.format_exc()) # Uncomment for detailed debugging
             return [], [], []  # Return empty on error
 
+        return boxes_xywh, track_ids, confidences
+
+
+class RfDetrStrategy(DetectionTrackingStrategy):
+    """Detection using RF-DETR base model from the rfdetr library."""
+
+    def __init__(self, model_path: str):
+        # model_path is currently ignored; RFDETRBase loads its default weights.
+        print(
+            f"Initializing RF-DETR strategy (model_path '{model_path}' ignored, using RFDETRBase defaults)"
+        )
+        try:
+            print("Attempting to load RFDETRBase...")
+            # --- Attempt to force CPU ---
+            # Explicitly request CPU device if MPS fallback/native fails
+            target_device = 'cpu'
+            print(f"Attempting to load RFDETRBase and force execution on device: '{target_device}'")
+            self.model = RFDETRBase() # Initialize first
+            print("RFDETRBase object created. Attempting to move model to CPU...")
+            try:
+                self.model.to(target_device)
+                if hasattr(self.model, 'model') and isinstance(self.model.model, torch.nn.Module):
+                    self.model.model.to(target_device)
+                print(f"Attempted to move model components to '{target_device}'.")
+                print(f"Performing dummy inference check on '{target_device}'...")
+                dummy_pil = Image.fromarray(np.zeros((640, 640, 3), dtype=np.uint8))
+                _ = self.model.predict(dummy_pil)
+                print("Dummy inference check on CPU successful.")
+            except Exception as move_exc:
+                 print(f"Warning: Error attempting to move model to CPU: {move_exc}.")
+            # --- End Force CPU ---
+
+            print("RF-DETR model initialization proceeding...")
+
+            self.person_label_index = 1
+            print(f"Set Person Class Index to: {self.person_label_index}")
+
+            self.score_threshold = (
+                0.5  # Minimum confidence score, same as reference
+            )
+            self.placeholder_id = -1  # RF-DETR predict is detection-only
+            print(f"RF-DETR strategy initialized, intended device: '{target_device}'.")
+
+
+        except ImportError:
+             print("ERROR: Critical - Failed to import RFDETRBase. Is 'rfdetr' library installed correctly?")
+             raise
+        except Exception as e:
+            # Catching the original MPS error here if forcing CPU failed or wasn't possible
+            print(f"ERROR: Critical - Failed during RFDETRBase initialization or CPU forcing: {e}")
+            raise # Re-throw the exception to be caught by PersonTracker
+
+
+    def process_frame(
+        self, frame: np.ndarray
+    ) -> Tuple[List[List[float]], List[int], List[float]]:
+        boxes_xywh = []
+        track_ids = []
+        confidences = []
+
+        if not hasattr(self, 'model') or self.model is None:
+             print("ERROR: RF-DETR model not initialized in process_frame.")
+             return [], [], []
+
+        try:
+            # --- Preprocessing ---
+            # print("Preprocessing RFDETR") # Optional: Keep if needed
+            img_rgb_np = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+            img_pil = Image.fromarray(img_rgb_np)
+
+            # --- Inference ---
+            # print("Running RFDETR prediction") # Optional: Keep if needed
+            detections = self.model.predict(img_pil, threshold=self.score_threshold)
+
+            # --- Postprocessing ---
+            # print("Postprocessing RFDETR") # Optional: Keep if needed
+            if detections:
+                # print(f"Raw Detections found: Count={len(detections)}") # Optional: More detailed log
+                pred_boxes_xyxy = detections.xyxy
+                pred_labels = detections.class_id
+                pred_scores = detections.confidence
+
+                detection_count_in_frame = 0 # Counter for this frame
+
+                for box_xyxy, label, score in zip(
+                    pred_boxes_xyxy, pred_labels, pred_scores
+                ):
+                    detection_count_in_frame += 1
+                    # <<< ADD MORE LOGGING >>>
+                    print(f"  [RFDETR Detection {detection_count_in_frame}] Raw Label: {label}, Score: {score:.4f}") # Log raw label and score
+
+                    # Filter for 'person' class (NOW USING INDEX 1) and confidence threshold
+                    if label == self.person_label_index:
+                        print(f"    -> MATCHED Person Index ({self.person_label_index})! Score: {score:.4f}")
+                        if score >= self.score_threshold:
+                            print(f"      -> PASSED Threshold ({self.score_threshold})! ADDING BOX.")
+                            x1, y1, x2, y2 = box_xyxy
+                            width = x2 - x1
+                            height = y2 - y1
+
+                            if width > 0 and height > 0:
+                                center_x = x1 + width / 2
+                                center_y = y1 + height / 2
+                                boxes_xywh.append([center_x, center_y, width, height])
+                                track_ids.append(self.placeholder_id)
+                                confidences.append(float(score))
+                            else:
+                                print(f"      -> SKIPPED Box (Invalid Dimensions: w={width}, h={height})")
+                        else:
+                            print(f"      -> FAILED Threshold ({self.score_threshold}).")
+                    # <<< END LOGGING >>>
+
+            # else: # Optional log if no detections at all
+                # print("No raw detections returned by model.predict().")
+
+        except Exception as e:
+            print(f"Error during RF-DETR processing step: {e}")
+            import traceback # Add traceback for detailed errors
+            print(traceback.format_exc())
+            return [], [], []
+
+        # Log final counts for this frame
+        print(f"  -> RFDETR Frame Processed. Found {len(boxes_xywh)} persons passing filters.")
         return boxes_xywh, track_ids, confidences

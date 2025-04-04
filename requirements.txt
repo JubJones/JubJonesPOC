@@ -19,3 +19,4 @@ protobuf<4.21.3
 torchreid
 ultralytics
 gradio
+rfdetr

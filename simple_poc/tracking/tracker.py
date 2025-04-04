@@ -10,6 +10,7 @@ from simple_poc.tracking.strategies import (
     YoloStrategy,
     RTDetrStrategy,
     FasterRCNNStrategy,
+    RfDetrStrategy,
 )
 
 
@@ -54,11 +55,14 @@ class PersonTracker:
                 self.strategy: DetectionTrackingStrategy = FasterRCNNStrategy(
                     self.model_path
                 )
+            elif self.model_type == "rfdetr":
+                self.strategy: DetectionTrackingStrategy = RfDetrStrategy(
+                    self.model_path
+                )
             else:
-                raise ValueError(f"Unsupported model_type: {self.model_type}")
+                raise ValueError(f"Unsupported model_type: {self.model_type}. Must be one of 'yolo', 'rtdetr', 'fasterrcnn', 'rfdetr'.")
             print("Strategy initialized successfully.")
         except Exception as e:
-            # Log the fatal error and raise a specific runtime error
             error_msg = f"FATAL ERROR: Failed to initialize tracking strategy '{self.model_type}' with path '{self.model_path}': {e}"
             print(error_msg)
             raise RuntimeError(error_msg) from e
@@ -81,6 +85,7 @@ class PersonTracker:
         )
 
         # Homography and frame dimension attributes (can be set externally, e.g., by app.py)
+        # Renamed H to homography_matrix for clarity
         self.homography_matrix: Optional[np.ndarray] = None
         self.frame_width: Optional[int] = None
         self.frame_height: Optional[int] = None
@@ -183,7 +188,7 @@ class PersonTracker:
                     print(
                         f"Warning [update_person_crops]: Cannot crop from invalid frame for cam {camera_id}."
                     )
-                    continue  # Skip if frame is bad
+                    continue # Skip if frame is bad
 
                 crop_bgr = frame_bgr[y1:y2, x1:x2].copy()
                 if crop_bgr.size == 0:
@@ -333,6 +338,10 @@ class PersonTracker:
                         by = cy + h / 2
                         if w > 0 and h > 0:
                             self.track_history[track_id].append((float(x), float(by)))
+                            # Limit history length
+                            if len(self.track_history[track_id]) > 50: # Limit trail length
+                                self.track_history[track_id] = self.track_history[track_id][-50:]
+
 
                 self._update_person_crops_for_camera(frame_bgr, camera_id)
 
@@ -354,20 +363,32 @@ class PersonTracker:
         annotated_frame_bgr = self._create_annotated_frame(frame_bgr.copy(), camera_id)
 
         # Map Visualization (using latest results for this camera AND global history)
-        map_img_bgr = create_map_visualization(
-            self.map_width,
-            self.map_height,
-            self.destination_points,  # Use stored destination points
-            self.latest_boxes_per_camera.get(
-                camera_id, []
-            ),  # Boxes from current camera
-            self.latest_track_ids_per_camera.get(
-                camera_id, []
-            ),  # IDs from current camera
-            self.track_history,  # Global track history
-            self.homography_matrix,  # Stored homography
-            self.selected_track_id,  # Optional selected ID
-        )
+        # Important: Ensure destination_points is available before calling map creation
+        if self.destination_points is not None and self.homography_matrix is not None:
+             map_img_bgr = create_map_visualization(
+                self.map_width,
+                self.map_height,
+                self.destination_points,  # Use stored destination points
+                self.latest_boxes_per_camera.get(
+                    camera_id, []
+                ),  # Boxes from current camera
+                self.latest_track_ids_per_camera.get(
+                    camera_id, []
+                ),  # IDs from current camera
+                self.track_history,  # Global track history
+                self.homography_matrix,  # Stored homography
+                self.selected_track_id,  # Optional selected ID
+            )
+        else:
+            # Handle missing homography/points for map
+             map_img_bgr = np.full(
+                 (self.map_height, self.map_width, 3), 240, dtype=np.uint8
+             )  # Grey map
+             cv2.putText(
+                 map_img_bgr,
+                 "Map Data Error", (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 0, 0), 2
+             )
+
 
         # Convert to RGB for Gradio output
         annotated_frame_rgb = (
@@ -509,7 +530,7 @@ class PersonTracker:
                 self.latest_track_ids_per_camera.get(camera_id, [])
             )
 
-        # --- Generate the Combined Map Visualization (Still not working) ---
+        # --- Generate the Combined Map Visualization ---
         map_img_rgb: Optional[np.ndarray] = None
         if self.homography_matrix is not None and self.destination_points is not None:
             map_img_bgr = create_map_visualization(
