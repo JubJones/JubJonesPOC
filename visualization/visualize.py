@@ -2,7 +2,6 @@ import plotly.graph_objects as go
 import pandas as pd
 from plotly.subplots import make_subplots
 
-# Data including rfdetr_base and swapped fasterrcnn order
 data = {
     'Model': [
         'yolov11x', 'yolov11x',
@@ -34,7 +33,7 @@ data = {
         67, 92,
         78, 114,
         49, 90,
-        101, 66
+        66, 101
         ],
     'Ground Truth': [
         64, 102,
