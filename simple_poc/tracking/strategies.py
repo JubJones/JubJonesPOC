@@ -10,12 +10,7 @@ from rfdetr import RFDETRLarge
 from torchvision.models.detection import FasterRCNN_ResNet50_FPN_Weights
 from ultralytics import YOLO, RTDETR
 
-# --- Configuration Flag ---
-# Set this variable to control the primary compute device.
-# Options:
-#   'cuda' - Try to use the first available CUDA GPU. Falls back to CPU if unavailable.
-#   'cpu'  - Force use of the CPU.
-#   'auto' - Let PyTorch/Ultralytics decide (usually CUDA > MPS > CPU). # Added 'auto' option
+
 FORCE_DEVICE = "cpu"
 
 
@@ -303,51 +298,60 @@ class FasterRCNNStrategy(DetectionTrackingStrategy):
 
 
 class RfDetrStrategy(DetectionTrackingStrategy):
-    """Detection using RF-DETR base model from the rfdetr library."""
+    """Detection using RF-DETR model from the rfdetr library."""
 
     def __init__(self, model_path: str):
         self.device = get_selected_device()
+
+        device_str = str(self.device.type)
+
         print(
-            f"Initializing RF-DETR strategy (using RFDETRLarge defaults) on device: {self.device}"
+            f"Initializing RF-DETR strategy (using RFDETRLarge defaults), attempting to use device: '{device_str}'"
         )
         try:
             print("Attempting to load RFDETRLarge...")
 
-            self.model = RFDETRLarge()
+            self.model = RFDETRLarge(device=device_str)
+
+            print(f"RFDETRLarge object created, configured for device '{device_str}'.")
+
             print(
-                f"Attempting to move RFDETRLarge model components to '{self.device}'..."
+                f"Performing dummy inference check (expecting model on '{device_str}')..."
             )
-
-            self.model.to(self.device)
-            if hasattr(self.model, "model") and isinstance(
-                self.model.model, torch.nn.Module
-            ):
-                self.model.model.to(self.device)
-            print(f"Attempted to move model components to '{self.device}'.")
-
-            print(f"Performing dummy inference check on '{self.device}'...")
             dummy_pil = Image.fromarray(np.zeros((640, 640, 3), dtype=np.uint8))
-
             with torch.no_grad():
                 _ = self.model.predict(dummy_pil)
-            print(f"Dummy inference check on {self.device} successful.")
+            print(f"Dummy inference check successful.")
 
             self.person_label_index = 1
-            print(f"Set Person Class Index to: {self.person_label_index}")
 
             self.score_threshold = 0.5
             self.placeholder_id = -1
-            print(f"RF-DETR strategy initialized on device: '{self.device}'.")
+            print(
+                f"RF-DETR strategy initialized. Inference will target device: '{device_str}'."
+            )
 
         except ImportError:
             print(
-                "ERROR: Critical - Failed to import RFDETRLarge. Is 'rfdetr' library installed correctly?"
+                "ERROR: Critical - RFDETRLarge could not be imported. Is 'rfdetr' library installed correctly?"
             )
             raise
-        except Exception as e:
+        except TypeError as te:
             print(
-                f"ERROR: Critical - Failed during RFDETRLarge initialization or device placement: {e}"
+                f"ERROR: Failed to initialize RFDETRLarge - Potential issue with 'device' argument: {te}"
             )
+            print(
+                "       The RFDETRLarge constructor might not accept a 'device' argument."
+            )
+            print(
+                "       Check the 'rfdetr' library documentation for device specification."
+            )
+            raise te from None
+        except Exception as e:
+            print(f"ERROR: Critical - Failed during RFDETRLarge initialization: {e}")
+            import traceback
+
+            print(traceback.format_exc())
             raise
 
     def process_frame(
@@ -372,25 +376,23 @@ class RfDetrStrategy(DetectionTrackingStrategy):
                 pred_labels = detections.class_id
                 pred_scores = detections.confidence
 
-                detection_count_in_frame = 0
-
                 for box_xyxy, label, score in zip(
                     pred_boxes_xyxy, pred_labels, pred_scores
                 ):
-                    detection_count_in_frame += 1
+                    if (
+                        label == self.person_label_index
+                        and score >= self.score_threshold
+                    ):
+                        x1, y1, x2, y2 = box_xyxy
+                        width = x2 - x1
+                        height = y2 - y1
 
-                    if label == self.person_label_index:
-                        if score >= self.score_threshold:
-                            x1, y1, x2, y2 = box_xyxy
-                            width = x2 - x1
-                            height = y2 - y1
-
-                            if width > 0 and height > 0:
-                                center_x = x1 + width / 2
-                                center_y = y1 + height / 2
-                                boxes_xywh.append([center_x, center_y, width, height])
-                                track_ids.append(self.placeholder_id)
-                                confidences.append(float(score))
+                        if width > 0 and height > 0:
+                            center_x = x1 + width / 2
+                            center_y = y1 + height / 2
+                            boxes_xywh.append([center_x, center_y, width, height])
+                            track_ids.append(self.placeholder_id)
+                            confidences.append(float(score))
 
         except Exception as e:
             print(f"Error during RF-DETR processing step: {e}")
