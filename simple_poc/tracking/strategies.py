@@ -16,7 +16,7 @@ from ultralytics import YOLO, RTDETR
 #   'cuda' - Try to use the first available CUDA GPU. Falls back to CPU if unavailable.
 #   'cpu'  - Force use of the CPU.
 #   'auto' - Let PyTorch/Ultralytics decide (usually CUDA > MPS > CPU). # Added 'auto' option
-FORCE_DEVICE = 'cuda'
+FORCE_DEVICE = 'cpu'
 
 
 def get_selected_device() -> torch.device:
