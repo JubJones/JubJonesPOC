@@ -11,7 +11,7 @@ from torchvision.models.detection import FasterRCNN_ResNet50_FPN_Weights
 from ultralytics import YOLO, RTDETR
 
 
-FORCE_DEVICE = "cpu"
+FORCE_DEVICE = "cuda" # Change this to "cpu" or "auto" as needed
 
 
 def get_selected_device() -> torch.device:
