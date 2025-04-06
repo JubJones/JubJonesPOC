@@ -26,11 +26,15 @@ def attempt_load(weights, map_location=None):
     for w in weights if isinstance(weights, list) else [weights]:
         # Since the weight file is assumed to be local,
         # we directly load it without calling attempt_download.
-        ckpt = torch.load(w, map_location=map_location, weights_only=False)  # load checkpoint from local path
+        ckpt = torch.load(
+            w, map_location=map_location, weights_only=False
+        )  # load checkpoint from local path
 
         # Depending on if 'ema' exists in the checkpoint, select the corresponding model.
-        model_to_append = ckpt['ema' if ckpt.get('ema') else 'model']
-        model.append(model_to_append.float().fuse().eval())  # convert to FP32, fuse layers, and set eval mode
+        model_to_append = ckpt["ema" if ckpt.get("ema") else "model"]
+        model.append(
+            model_to_append.float().fuse().eval()
+        )  # convert to FP32, fuse layers, and set eval mode
 
     # Compatibility updates for various layers.
     for m in model.modules():
@@ -45,9 +49,8 @@ def attempt_load(weights, map_location=None):
     if len(model) == 1:
         return model[-1]
     else:
-        print('Ensemble created with %s\n' % weights)
+        print("Ensemble created with %s\n" % weights)
         # In case of an ensemble, add selected properties from the last model.
-        for k in ['names', 'stride']:
+        for k in ["names", "stride"]:
             setattr(model, k, getattr(model[-1], k))
         return model  # return the ensemble
-

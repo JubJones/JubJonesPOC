@@ -37,27 +37,37 @@ class PersonTracker:
         cv2.setMouseCallback("YOLO Tracking", self.mouse_callback)
 
     def compute_homography(self):
-        src_points = np.float32([
-            [self.frame_width * 0.1, self.frame_height * 0.1],
-            [self.frame_width * 0.9, self.frame_height * 0.1],
-            [self.frame_width * 0.9, self.frame_height * 0.95],
-            [self.frame_width * 0.1, self.frame_height * 0.95]
-        ])
+        src_points = np.float32(
+            [
+                [self.frame_width * 0.1, self.frame_height * 0.1],
+                [self.frame_width * 0.9, self.frame_height * 0.1],
+                [self.frame_width * 0.9, self.frame_height * 0.95],
+                [self.frame_width * 0.1, self.frame_height * 0.95],
+            ]
+        )
 
-        dst_points = np.float32([
-            [0, 0],
-            [self.map_width, 0],
-            [self.map_width, self.map_height],
-            [0, self.map_height]
-        ])
+        dst_points = np.float32(
+            [
+                [0, 0],
+                [self.map_width, 0],
+                [self.map_width, self.map_height],
+                [0, self.map_height],
+            ]
+        )
 
-        return cv2.getPerspectiveTransform(src_points, dst_points), src_points, dst_points
+        return (
+            cv2.getPerspectiveTransform(src_points, dst_points),
+            src_points,
+            dst_points,
+        )
 
     def mouse_callback(self, event, x, y, flags, param):
         if event != cv2.EVENT_LBUTTONDOWN or not self.current_boxes.size:
             return
 
-        for i, (box, track_id) in enumerate(zip(self.current_boxes, self.current_track_ids)):
+        for i, (box, track_id) in enumerate(
+            zip(self.current_boxes, self.current_track_ids)
+        ):
             # Convert center coordinates to corners
             cx, cy, w, h = box
             x1, y1 = int(cx - w / 2), int(cy - h / 2)
@@ -88,7 +98,7 @@ class PersonTracker:
                 results = self.model.track(frame, persist=True)
 
                 # Store current detection data
-                if hasattr(results[0].boxes, 'id') and results[0].boxes.id is not None:
+                if hasattr(results[0].boxes, "id") and results[0].boxes.id is not None:
                     self.current_boxes = results[0].boxes.xywh.cpu()
                     self.current_track_ids = results[0].boxes.id.int().cpu().tolist()
 
@@ -97,10 +107,20 @@ class PersonTracker:
             img_map = np.full((self.map_height, self.map_width, 3), 255, dtype=np.uint8)
 
             # Draw ROI polygon
-            cv2.polylines(annotated_frame, [self.src_points.astype(np.int32).reshape((-1, 1, 2))],
-                          True, (0, 255, 255), 2)
-            cv2.polylines(img_map, [self.dst_points.astype(np.int32).reshape((-1, 1, 2))],
-                          True, (255, 0, 0), 2)
+            cv2.polylines(
+                annotated_frame,
+                [self.src_points.astype(np.int32).reshape((-1, 1, 2))],
+                True,
+                (0, 255, 255),
+                2,
+            )
+            cv2.polylines(
+                img_map,
+                [self.dst_points.astype(np.int32).reshape((-1, 1, 2))],
+                True,
+                (255, 0, 0),
+                2,
+            )
 
             # Process each tracked person
             for box, track_id in zip(self.current_boxes, self.current_track_ids):
@@ -108,7 +128,7 @@ class PersonTracker:
                 y = cy + h / 2  # Bottom center
 
                 # Determine if this is the selected person
-                is_selected = (track_id == self.selected_track_id)
+                is_selected = track_id == self.selected_track_id
                 color = (0, 0, 255) if is_selected else (0, 255, 0)
                 thickness = 3 if is_selected else 2
 
@@ -116,8 +136,15 @@ class PersonTracker:
                 x1, y1 = int(x - w / 2), int(cy - h / 2)
                 x2, y2 = int(x + w / 2), int(cy + h / 2)
                 cv2.rectangle(annotated_frame, (x1, y1), (x2, y2), color, thickness)
-                cv2.putText(annotated_frame, f"ID:{track_id}", (x1, y1 - 5),
-                            cv2.FONT_HERSHEY_SIMPLEX, 0.5, color, thickness)
+                cv2.putText(
+                    annotated_frame,
+                    f"ID:{track_id}",
+                    (x1, y1 - 5),
+                    cv2.FONT_HERSHEY_SIMPLEX,
+                    0.5,
+                    color,
+                    thickness,
+                )
 
                 # Update track history
                 self.track_history[track_id].append((float(x), float(y)))
@@ -132,13 +159,20 @@ class PersonTracker:
                 # Draw on map
                 radius = 7 if is_selected else 5
                 cv2.circle(img_map, pt_mapped, radius, color, -1)
-                cv2.putText(img_map, str(track_id), (pt_mapped[0] + 5, pt_mapped[1]),
-                            cv2.FONT_HERSHEY_SIMPLEX, 0.5, color, 2)
+                cv2.putText(
+                    img_map,
+                    str(track_id),
+                    (pt_mapped[0] + 5, pt_mapped[1]),
+                    cv2.FONT_HERSHEY_SIMPLEX,
+                    0.5,
+                    color,
+                    2,
+                )
 
             # Draw trajectories on map
             for track_id, track in self.track_history.items():
                 if len(track) >= 2:
-                    is_selected = (track_id == self.selected_track_id)
+                    is_selected = track_id == self.selected_track_id
                     color = (0, 0, 255) if is_selected else (200, 200, 200)
                     thickness = 3 if is_selected else 2
 
@@ -151,8 +185,15 @@ class PersonTracker:
             status = f"{'Paused' if self.paused else 'Playing'}"
             if self.selected_track_id is not None:
                 status += f" | Tracking ID: {self.selected_track_id}"
-            cv2.putText(annotated_frame, status, (10, 30),
-                        cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 0, 255), 2)
+            cv2.putText(
+                annotated_frame,
+                status,
+                (10, 30),
+                cv2.FONT_HERSHEY_SIMPLEX,
+                0.7,
+                (0, 0, 255),
+                2,
+            )
 
             # Display frames
             cv2.imshow("YOLO Tracking", annotated_frame)
@@ -160,11 +201,11 @@ class PersonTracker:
 
             # Handle keys
             key = cv2.waitKey(1) & 0xFF
-            if key == ord('q'):
+            if key == ord("q"):
                 break
-            elif key == ord(' '):  # Pause/play
+            elif key == ord(" "):  # Pause/play
                 self.paused = not self.paused
-            elif key == ord('c'):  # Clear selection
+            elif key == ord("c"):  # Clear selection
                 self.selected_track_id = None
 
         self.cap.release()

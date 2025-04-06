@@ -5,15 +5,28 @@ import numpy as np
 # YOLOv7 and StrongSORT imports
 from modeling.yolov7.models.experimental import attempt_load
 from modeling.strong_sort.strong_sort import StrongSORT
-from modeling.utils.general import non_max_suppression, scale_coords, check_img_size, set_logging
+from modeling.utils.general import (
+    non_max_suppression,
+    scale_coords,
+    check_img_size,
+    set_logging,
+)
 from modeling.utils.plots import plot_one_box
 
 from modeling_logic.data_preprocessing import letterbox, compute_homography
 
 
 class YOLOv7StrongSortTracker:
-    def __init__(self, yolo_weights, strong_sort_weights, img_size=640, conf_thres=0.25,
-                 iou_thres=0.45, device="cuda:0", classes=[0]):
+    def __init__(
+        self,
+        yolo_weights,
+        strong_sort_weights,
+        img_size=640,
+        conf_thres=0.25,
+        iou_thres=0.45,
+        device="cuda:0",
+        classes=[0],
+    ):
         set_logging()
         self.device = torch.device(device if torch.cuda.is_available() else "cpu")
         self.half = self.device.type != "cpu"
@@ -37,7 +50,7 @@ class YOLOv7StrongSortTracker:
             max_iou_distance=0.7,
             max_age=70,
             n_init=3,
-            nn_budget=100
+            nn_budget=100,
         )
 
     def preprocess(self, img0):
@@ -61,10 +74,14 @@ class YOLOv7StrongSortTracker:
         detections = []
         class_ids = []
         if pred[0] is not None and len(pred[0]):
-            pred[0][:, :4] = scale_coords(img_tensor.shape[2:], pred[0][:, :4], img0.shape).round()
+            pred[0][:, :4] = scale_coords(
+                img_tensor.shape[2:], pred[0][:, :4], img0.shape
+            ).round()
             for *xyxy, conf, cls in pred[0]:
                 x1, y1, x2, y2 = xyxy
-                detections.append([x1.item(), y1.item(), x2.item(), y2.item(), conf.item()])
+                detections.append(
+                    [x1.item(), y1.item(), x2.item(), y2.item(), conf.item()]
+                )
                 class_ids.append(int(cls.item()))
         return detections, class_ids
 
@@ -72,19 +89,25 @@ class YOLOv7StrongSortTracker:
         """
         Run detection and tracking on the given video source.
         """
-        cap = cv2.VideoCapture(int(source)) if source.isdigit() else cv2.VideoCapture(source)
+        cap = (
+            cv2.VideoCapture(int(source))
+            if source.isdigit()
+            else cv2.VideoCapture(source)
+        )
         if not cap.isOpened():
             raise Exception(f"Failed to open source: {source}")
 
         frame_width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
         frame_height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
         fps = cap.get(cv2.CAP_PROP_FPS) or 30  # use default if FPS is not available
-        fourcc = cv2.VideoWriter_fourcc(*'mp4v')
+        fourcc = cv2.VideoWriter_fourcc(*"mp4v")
         out = cv2.VideoWriter("output.mp4", fourcc, fps, (frame_width, frame_height))
 
         # Define the resolution for the top-down map and compute the homography
         map_width, map_height = 600, 800
-        H, src_points, dst_points = compute_homography(frame_width, frame_height, map_width, map_height)
+        H, src_points, dst_points = compute_homography(
+            frame_width, frame_height, map_width, map_height
+        )
 
         print("Tracking started – press 'q' to quit.")
         while True:
@@ -100,7 +123,13 @@ class YOLOv7StrongSortTracker:
                 pred = self.model(img_tensor)[0]
 
             # Apply non-max suppression and extract detections
-            pred = non_max_suppression(pred, self.conf_thres, self.iou_thres, classes=self.classes, agnostic=False)
+            pred = non_max_suppression(
+                pred,
+                self.conf_thres,
+                self.iou_thres,
+                classes=self.classes,
+                agnostic=False,
+            )
             detections, class_ids = self.postprocess(pred, img0, img_tensor)
 
             # Prepare a blank map image (white background) and draw the designated polygon
@@ -121,12 +150,20 @@ class YOLOv7StrongSortTracker:
                 bbox_xywh[:, 2] = bbox_xyxy[:, 2] - bbox_xyxy[:, 0]
                 bbox_xywh[:, 3] = bbox_xyxy[:, 3] - bbox_xyxy[:, 1]
 
-                outputs = self.tracker.update(bbox_xywh, confidences, class_ids_np, img0)
+                outputs = self.tracker.update(
+                    bbox_xywh, confidences, class_ids_np, img0
+                )
                 if outputs is not None:
                     for output in outputs:
                         bbox = output[:4]  # [x1, y1, x2, y2]
                         track_id = int(output[4])
-                        plot_one_box(bbox, img0, label=f"ID {track_id}", color=(0, 0, 255), line_thickness=2)
+                        plot_one_box(
+                            bbox,
+                            img0,
+                            label=f"ID {track_id}",
+                            color=(0, 0, 255),
+                            line_thickness=2,
+                        )
 
                         # Compute the bottom-center of the bounding box
                         center_x = (bbox[0] + bbox[2]) / 2
@@ -135,14 +172,24 @@ class YOLOv7StrongSortTracker:
 
                         # Map the point to the top-down view using the homography matrix
                         pt_transformed = cv2.perspectiveTransform(pt, H)
-                        pt_mapped = (int(pt_transformed[0][0][0]), int(pt_transformed[0][0][1]))
+                        pt_mapped = (
+                            int(pt_transformed[0][0][0]),
+                            int(pt_transformed[0][0][1]),
+                        )
 
                         print(f"Detection bottom center: ({center_x}, {bottom_y})")
                         print(f"Mapped point: {pt_mapped}")
 
                         cv2.circle(img_map, pt_mapped, 5, (0, 255, 0), -1)
-                        cv2.putText(img_map, str(track_id), (pt_mapped[0] + 10, pt_mapped[1]),
-                                    cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 0), 2)
+                        cv2.putText(
+                            img_map,
+                            str(track_id),
+                            (pt_mapped[0] + 10, pt_mapped[1]),
+                            cv2.FONT_HERSHEY_SIMPLEX,
+                            0.5,
+                            (0, 255, 0),
+                            2,
+                        )
 
             # Draw the source polygon on the original image
             src_pts_int = src_points.astype(np.int32).reshape((-1, 1, 2))

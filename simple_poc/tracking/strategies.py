@@ -16,45 +16,48 @@ from ultralytics import YOLO, RTDETR
 #   'cuda' - Try to use the first available CUDA GPU. Falls back to CPU if unavailable.
 #   'cpu'  - Force use of the CPU.
 #   'auto' - Let PyTorch/Ultralytics decide (usually CUDA > MPS > CPU). # Added 'auto' option
-FORCE_DEVICE = 'cpu'
+FORCE_DEVICE = "cpu"
 
 
 def get_selected_device() -> torch.device:
     """Gets the torch.device based on FORCE_DEVICE flag and availability."""
-    if FORCE_DEVICE.startswith('cuda'):
+    if FORCE_DEVICE.startswith("cuda"):
         if torch.cuda.is_available():
             try:
                 device = torch.device(FORCE_DEVICE)
 
                 torch.cuda.get_device_name(device)
-                print(f"Selected device: {device} ({torch.cuda.get_device_name(device)})")
+                print(
+                    f"Selected device: {device} ({torch.cuda.get_device_name(device)})"
+                )
                 return device
             except Exception as e:
                 print(
-                    f"WARNING: Requested CUDA device '{FORCE_DEVICE}' not valid or available ({e}). Falling back to CPU.")
-                return torch.device('cpu')
+                    f"WARNING: Requested CUDA device '{FORCE_DEVICE}' not valid or available ({e}). Falling back to CPU."
+                )
+                return torch.device("cpu")
         else:
             print("WARNING: CUDA requested but not available. Falling back to CPU.")
-            return torch.device('cpu')
-    elif FORCE_DEVICE == 'cpu':
+            return torch.device("cpu")
+    elif FORCE_DEVICE == "cpu":
         print("Selected device: cpu")
-        return torch.device('cpu')
-    elif FORCE_DEVICE == 'auto':
-
+        return torch.device("cpu")
+    elif FORCE_DEVICE == "auto":
         if torch.cuda.is_available():
-            device = torch.device('cuda')
-            print(f"Auto-selected device: {device} ({torch.cuda.get_device_name(device)})")
+            device = torch.device("cuda")
+            print(
+                f"Auto-selected device: {device} ({torch.cuda.get_device_name(device)})"
+            )
             return device
-
-
-
 
         else:
             print("Auto-selected device: cpu")
-            return torch.device('cpu')
+            return torch.device("cpu")
     else:
-        print(f"WARNING: Unknown FORCE_DEVICE value '{FORCE_DEVICE}'. Falling back to CPU.")
-        return torch.device('cpu')
+        print(
+            f"WARNING: Unknown FORCE_DEVICE value '{FORCE_DEVICE}'. Falling back to CPU."
+        )
+        return torch.device("cpu")
 
 
 class DetectionTrackingStrategy(abc.ABC):
@@ -67,7 +70,7 @@ class DetectionTrackingStrategy(abc.ABC):
 
     @abc.abstractmethod
     def process_frame(
-            self, frame: np.ndarray
+        self, frame: np.ndarray
     ) -> Tuple[List[List[float]], List[int], List[float]]:
         """
         Process a single frame to detect and track objects (specifically persons).
@@ -89,9 +92,10 @@ class YoloStrategy(DetectionTrackingStrategy):
 
     def __init__(self, model_path: str):
         self.selected_device = get_selected_device()
-        print(f"Initializing YOLO strategy with model: {model_path} on device: {self.selected_device}")
+        print(
+            f"Initializing YOLO strategy with model: {model_path} on device: {self.selected_device}"
+        )
         try:
-
             self.model = YOLO(model_path)
             self.model.to(self.selected_device)
 
@@ -100,11 +104,13 @@ class YoloStrategy(DetectionTrackingStrategy):
             self.model.predict(dummy_frame, device=self.selected_device, verbose=False)
             print(f"YOLO model loaded successfully onto {self.selected_device}.")
         except Exception as e:
-            print(f"ERROR: Failed to load YOLO model '{model_path}' onto {self.selected_device}: {e}")
+            print(
+                f"ERROR: Failed to load YOLO model '{model_path}' onto {self.selected_device}: {e}"
+            )
             raise
 
     def process_frame(
-            self, frame: np.ndarray
+        self, frame: np.ndarray
     ) -> Tuple[List[List[float]], List[int], List[float]]:
         boxes_xywh = []
         track_ids = []
@@ -112,8 +118,13 @@ class YoloStrategy(DetectionTrackingStrategy):
         placeholder_id = -1
 
         try:
-
-            results = self.model.track(frame, persist=False, classes=0, device=self.selected_device, verbose=False)
+            results = self.model.track(
+                frame,
+                persist=False,
+                classes=0,
+                device=self.selected_device,
+                verbose=False,
+            )
 
             if results and results[0].boxes is not None:
                 res_boxes = results[0].boxes
@@ -152,9 +163,10 @@ class RTDetrStrategy(DetectionTrackingStrategy):
 
     def __init__(self, model_path: str):
         self.selected_device = get_selected_device()
-        print(f"Initializing RT-DETR strategy with model: {model_path} on device: {self.selected_device}")
+        print(
+            f"Initializing RT-DETR strategy with model: {model_path} on device: {self.selected_device}"
+        )
         try:
-
             self.model = RTDETR(model_path)
             self.model.to(self.selected_device)
 
@@ -162,11 +174,13 @@ class RTDetrStrategy(DetectionTrackingStrategy):
             self.model.predict(dummy_frame, device=self.selected_device, verbose=False)
             print(f"RT-DETR model loaded successfully onto {self.selected_device}.")
         except Exception as e:
-            print(f"ERROR: Failed to load RT-DETR model '{model_path}' onto {self.selected_device}: {e}")
+            print(
+                f"ERROR: Failed to load RT-DETR model '{model_path}' onto {self.selected_device}: {e}"
+            )
             raise
 
     def process_frame(
-            self, frame: np.ndarray
+        self, frame: np.ndarray
     ) -> Tuple[List[List[float]], List[int], List[float]]:
         boxes_xywh = []
         track_ids = []
@@ -174,8 +188,13 @@ class RTDetrStrategy(DetectionTrackingStrategy):
         placeholder_id = -1
 
         try:
-
-            results = self.model.track(frame, persist=False, classes=0, device=self.selected_device, verbose=False)
+            results = self.model.track(
+                frame,
+                persist=False,
+                classes=0,
+                device=self.selected_device,
+                verbose=False,
+            )
 
             if results and results[0].boxes is not None:
                 res_boxes = results[0].boxes
@@ -211,11 +230,11 @@ class FasterRCNNStrategy(DetectionTrackingStrategy):
     """Detection using Faster R-CNN (ResNet50 FPN) from TorchVision."""
 
     def __init__(self, model_path: str):
-
         self.device = get_selected_device()
-        print(f"Initializing Faster R-CNN strategy (using default TorchVision weights) on device: {self.device}")
+        print(
+            f"Initializing Faster R-CNN strategy (using default TorchVision weights) on device: {self.device}"
+        )
         try:
-
             print(f"Using device: {self.device}")
 
             weights = FasterRCNN_ResNet50_FPN_Weights.DEFAULT
@@ -228,9 +247,7 @@ class FasterRCNNStrategy(DetectionTrackingStrategy):
             self.transforms = weights.transforms()
 
             self.person_label_index = 1
-            self.score_threshold = (
-                0.5
-            )
+            self.score_threshold = 0.5
             self.placeholder_id = -1
 
             print("Faster R-CNN model loaded successfully.")
@@ -239,14 +256,13 @@ class FasterRCNNStrategy(DetectionTrackingStrategy):
             raise
 
     def process_frame(
-            self, frame: np.ndarray
+        self, frame: np.ndarray
     ) -> Tuple[List[List[float]], List[int], List[float]]:
         boxes_xywh = []
         track_ids = []
         confidences = []
 
         try:
-
             img_rgb_np = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
 
             img_pil = Image.fromarray(img_rgb_np)
@@ -263,9 +279,8 @@ class FasterRCNNStrategy(DetectionTrackingStrategy):
             pred_scores = predictions[0]["scores"].cpu().numpy()
 
             for box_xyxy, label, score in zip(
-                    pred_boxes_xyxy, pred_labels, pred_scores
+                pred_boxes_xyxy, pred_labels, pred_scores
             ):
-
                 if label == self.person_label_index and score >= self.score_threshold:
                     x1, y1, x2, y2 = box_xyxy
                     width = x2 - x1
@@ -291,7 +306,6 @@ class RfDetrStrategy(DetectionTrackingStrategy):
     """Detection using RF-DETR base model from the rfdetr library."""
 
     def __init__(self, model_path: str):
-
         self.device = get_selected_device()
         print(
             f"Initializing RF-DETR strategy (using RFDETRLarge defaults) on device: {self.device}"
@@ -300,10 +314,14 @@ class RfDetrStrategy(DetectionTrackingStrategy):
             print("Attempting to load RFDETRLarge...")
 
             self.model = RFDETRLarge()
-            print(f"Attempting to move RFDETRLarge model components to '{self.device}'...")
+            print(
+                f"Attempting to move RFDETRLarge model components to '{self.device}'..."
+            )
 
             self.model.to(self.device)
-            if hasattr(self.model, 'model') and isinstance(self.model.model, torch.nn.Module):
+            if hasattr(self.model, "model") and isinstance(
+                self.model.model, torch.nn.Module
+            ):
                 self.model.model.to(self.device)
             print(f"Attempted to move model components to '{self.device}'.")
 
@@ -317,40 +335,39 @@ class RfDetrStrategy(DetectionTrackingStrategy):
             self.person_label_index = 1
             print(f"Set Person Class Index to: {self.person_label_index}")
 
-            self.score_threshold = (
-                0.5
-            )
+            self.score_threshold = 0.5
             self.placeholder_id = -1
             print(f"RF-DETR strategy initialized on device: '{self.device}'.")
 
         except ImportError:
-            print("ERROR: Critical - Failed to import RFDETRLarge. Is 'rfdetr' library installed correctly?")
+            print(
+                "ERROR: Critical - Failed to import RFDETRLarge. Is 'rfdetr' library installed correctly?"
+            )
             raise
         except Exception as e:
-
-            print(f"ERROR: Critical - Failed during RFDETRLarge initialization or device placement: {e}")
+            print(
+                f"ERROR: Critical - Failed during RFDETRLarge initialization or device placement: {e}"
+            )
             raise
 
     def process_frame(
-            self, frame: np.ndarray
+        self, frame: np.ndarray
     ) -> Tuple[List[List[float]], List[int], List[float]]:
         boxes_xywh = []
         track_ids = []
         confidences = []
 
-        if not hasattr(self, 'model') or self.model is None:
+        if not hasattr(self, "model") or self.model is None:
             print("ERROR: RF-DETR model not initialized in process_frame.")
             return [], [], []
 
         try:
-
             img_rgb_np = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
             img_pil = Image.fromarray(img_rgb_np)
 
             detections = self.model.predict(img_pil, threshold=self.score_threshold)
 
             if detections:
-
                 pred_boxes_xyxy = detections.xyxy
                 pred_labels = detections.class_id
                 pred_scores = detections.confidence
@@ -358,14 +375,12 @@ class RfDetrStrategy(DetectionTrackingStrategy):
                 detection_count_in_frame = 0
 
                 for box_xyxy, label, score in zip(
-                        pred_boxes_xyxy, pred_labels, pred_scores
+                    pred_boxes_xyxy, pred_labels, pred_scores
                 ):
                     detection_count_in_frame += 1
 
                     if label == self.person_label_index:
-
                         if score >= self.score_threshold:
-
                             x1, y1, x2, y2 = box_xyxy
                             width = x2 - x1
                             height = y2 - y1
@@ -380,6 +395,7 @@ class RfDetrStrategy(DetectionTrackingStrategy):
         except Exception as e:
             print(f"Error during RF-DETR processing step: {e}")
             import traceback
+
             print(traceback.format_exc())
             return [], [], []
 

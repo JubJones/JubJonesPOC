@@ -18,7 +18,6 @@ from simple_poc.tracking.map import (
 
 
 class MTMMCTrackerApp:
-
     def __init__(
         self, model_path="yolov11l.pt", model_type="yolo", map_width=400, map_height=600
     ):
@@ -721,7 +720,7 @@ class MTMMCTrackerApp:
                 )
                 cv2.putText(
                     placeholder_img,
-                    f"No Image ({cam_id} F:{frame_index+1})",
+                    f"No Image ({cam_id} F:{frame_index + 1})",
                     (30, 30),
                     cv2.FONT_HERSHEY_SIMPLEX,
                     1,

@@ -60,7 +60,9 @@ class PersonTracker:
                     self.model_path
                 )
             else:
-                raise ValueError(f"Unsupported model_type: {self.model_type}. Must be one of 'yolo', 'rtdetr', 'fasterrcnn', 'rfdetr'.")
+                raise ValueError(
+                    f"Unsupported model_type: {self.model_type}. Must be one of 'yolo', 'rtdetr', 'fasterrcnn', 'rfdetr'."
+                )
             print("Strategy initialized successfully.")
         except Exception as e:
             error_msg = f"FATAL ERROR: Failed to initialize tracking strategy '{self.model_type}' with path '{self.model_path}': {e}"
@@ -188,7 +190,7 @@ class PersonTracker:
                     print(
                         f"Warning [update_person_crops]: Cannot crop from invalid frame for cam {camera_id}."
                     )
-                    continue # Skip if frame is bad
+                    continue  # Skip if frame is bad
 
                 crop_bgr = frame_bgr[y1:y2, x1:x2].copy()
                 if crop_bgr.size == 0:
@@ -339,9 +341,12 @@ class PersonTracker:
                         if w > 0 and h > 0:
                             self.track_history[track_id].append((float(x), float(by)))
                             # Limit history length
-                            if len(self.track_history[track_id]) > 50: # Limit trail length
-                                self.track_history[track_id] = self.track_history[track_id][-50:]
-
+                            if (
+                                len(self.track_history[track_id]) > 50
+                            ):  # Limit trail length
+                                self.track_history[track_id] = self.track_history[
+                                    track_id
+                                ][-50:]
 
                 self._update_person_crops_for_camera(frame_bgr, camera_id)
 
@@ -365,7 +370,7 @@ class PersonTracker:
         # Map Visualization (using latest results for this camera AND global history)
         # Important: Ensure destination_points is available before calling map creation
         if self.destination_points is not None and self.homography_matrix is not None:
-             map_img_bgr = create_map_visualization(
+            map_img_bgr = create_map_visualization(
                 self.map_width,
                 self.map_height,
                 self.destination_points,  # Use stored destination points
@@ -381,14 +386,18 @@ class PersonTracker:
             )
         else:
             # Handle missing homography/points for map
-             map_img_bgr = np.full(
-                 (self.map_height, self.map_width, 3), 240, dtype=np.uint8
-             )  # Grey map
-             cv2.putText(
-                 map_img_bgr,
-                 "Map Data Error", (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 0, 0), 2
-             )
-
+            map_img_bgr = np.full(
+                (self.map_height, self.map_width, 3), 240, dtype=np.uint8
+            )  # Grey map
+            cv2.putText(
+                map_img_bgr,
+                "Map Data Error",
+                (10, 30),
+                cv2.FONT_HERSHEY_SIMPLEX,
+                0.7,
+                (0, 0, 0),
+                2,
+            )
 
         # Convert to RGB for Gradio output
         annotated_frame_rgb = (
