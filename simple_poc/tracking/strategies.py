@@ -11,20 +11,23 @@ from torchvision.models.detection import FasterRCNN_ResNet50_FPN_Weights
 from ultralytics import YOLO, RTDETR
 
 
-FORCE_DEVICE = "cuda"  # Change this to "cpu" or "auto" as needed
+FORCE_DEVICE = "auto"  # Change this to "cuda", "mps", or "auto" as needed
+# FORCE_DEVICE = "cpu"  # Change this to "cuda", "mps", or "auto" as needed
 
 
 def get_selected_device() -> torch.device:
-    """Gets the torch.device based on FORCE_DEVICE flag and availability."""
+    """
+    Gets the torch.device based on FORCE_DEVICE flag and availability.
+    Prioritizes CUDA > MPS > CPU for "auto".
+    """
+    print(f"--- Determining Device (FORCE_DEVICE='{FORCE_DEVICE}') ---")
+
     if FORCE_DEVICE.startswith("cuda"):
         if torch.cuda.is_available():
             try:
                 device = torch.device(FORCE_DEVICE)
-
-                torch.cuda.get_device_name(device)
-                print(
-                    f"Selected device: {device} ({torch.cuda.get_device_name(device)})"
-                )
+                device_name = torch.cuda.get_device_name(device)
+                print(f"Selected device: {device} ({device_name})")
                 return device
             except Exception as e:
                 print(
@@ -34,20 +37,51 @@ def get_selected_device() -> torch.device:
         else:
             print("WARNING: CUDA requested but not available. Falling back to CPU.")
             return torch.device("cpu")
+
+    elif FORCE_DEVICE == "mps":
+        if torch.backends.mps.is_available():
+            device = torch.device("mps")
+            print(f"Selected device: {device}")
+            return device
+        else:
+            print("WARNING: MPS requested but not available. Falling back to CPU.")
+            return torch.device("cpu")
+
     elif FORCE_DEVICE == "cpu":
         print("Selected device: cpu")
         return torch.device("cpu")
-    elif FORCE_DEVICE == "auto":
-        if torch.cuda.is_available():
-            device = torch.device("cuda")
-            print(
-                f"Auto-selected device: {device} ({torch.cuda.get_device_name(device)})"
-            )
-            return device
 
+    elif FORCE_DEVICE == "auto":
+        print("Attempting auto-detection: CUDA > MPS > CPU")
+        # 1. Try CUDA
+        if torch.cuda.is_available():
+            try:
+                # Usually defaults to cuda:0. Let PyTorch handle default.
+                device = torch.device("cuda")
+                device_name = torch.cuda.get_device_name(device)
+                print(f"Auto-selected device: {device} ({device_name})")
+                return device
+            except Exception as e:
+                # This might happen if CUDA is available but the default device has issues
+                print(
+                    f"WARNING: CUDA available but failed to initialize ({e}). Checking MPS."
+                )
         else:
-            print("Auto-selected device: cpu")
-            return torch.device("cpu")
+            print("CUDA not available.")
+
+        # 2. Try MPS (if CUDA not available or failed)
+        if torch.backends.mps.is_available():
+            device = torch.device("mps")
+            print(f"Auto-selected device: {device}")
+            return device
+        else:
+            print("MPS not available.")
+
+        # 3. Fallback to CPU
+        device = torch.device("cpu")
+        print(f"Auto-selected device: {device}")
+        return device
+
     else:
         print(
             f"WARNING: Unknown FORCE_DEVICE value '{FORCE_DEVICE}'. Falling back to CPU."
@@ -183,12 +217,13 @@ class RTDetrStrategy(DetectionTrackingStrategy):
         placeholder_id = -1
 
         try:
-            results = self.model.track(
+            results = self.model.predict(
                 frame,
-                persist=False,
+                # persist=False,
                 classes=0,
                 device=self.selected_device,
                 verbose=False,
+                conf=0.5,
             )
 
             if results and results[0].boxes is not None:
@@ -225,7 +260,8 @@ class FasterRCNNStrategy(DetectionTrackingStrategy):
     """Detection using Faster R-CNN (ResNet50 FPN) from TorchVision."""
 
     def __init__(self, model_path: str):
-        self.device = get_selected_device()
+        # self.device = get_selected_device()
+        self.device = torch.device("cpu")
         print(
             f"Initializing Faster R-CNN strategy (using default TorchVision weights) on device: {self.device}"
         )

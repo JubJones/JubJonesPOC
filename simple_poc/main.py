@@ -10,7 +10,7 @@ if __name__ == "__main__":
     # app = MTMMCTrackerApp(model_path="yolov11l.pt", model_type='yolo')
     # app = MTMMCTrackerApp(model_path="yolov9e.pt", model_type='yolo')
     app = MTMMCTrackerApp(model_path="rtdetr-x.pt", model_type="rtdetr")
-    # app = MTMMCTrackerApp(model_path="fasterrcnn_resnet50_fpn", model_type='fasterrcnn') # Path ignored for default torchvision weights
+    # app = MTMMCTrackerApp(model_path="fasterrcnn_resnet50_fpn", model_type='fasterrcnn') # Path ignored for default torchvision weights, mps doesn't work.
     # app = MTMMCTrackerApp(
     #     model_path="rfdetr_l", model_type="rfdetr"
     # )
