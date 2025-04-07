@@ -1,0 +1,9 @@
+torch
+torchvision
+torchaudio
+opencv-python
+ultralytics
+boxmot
+scipy
+Pillow
+numpy

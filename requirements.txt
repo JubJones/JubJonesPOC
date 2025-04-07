@@ -20,3 +20,15 @@ rfdetr
 # Remove this if you are using a cuda (install it your self)
 torch
 torchvision
+
+
+# reid_poc
+torch
+torchvision
+torchaudio
+opencv-python
+ultralytics
+boxmot
+scipy
+Pillow
+numpy
