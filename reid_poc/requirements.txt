@@ -7,3 +7,4 @@ boxmot
 scipy
 Pillow
 numpy
+matplotlib

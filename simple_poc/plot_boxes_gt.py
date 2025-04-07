@@ -75,11 +75,11 @@ def display_video_with_bboxes(root_dir, scene, camera):
         cv2.putText(
             image,
             image_file,  # Text to display (the filename)
-            (10, 30),     # Position (x, y) - near top-left
+            (10, 30),  # Position (x, y) - near top-left
             cv2.FONT_HERSHEY_SIMPLEX,
-            0.7,          # Font scale
-            (255, 255, 255), # Color in BGR (White)
-            2             # Thickness
+            0.7,  # Font scale
+            (255, 255, 255),  # Color in BGR (White)
+            2,  # Thickness
         )
         # --- END ADDED CODE ---
 
@@ -92,7 +92,7 @@ def display_video_with_bboxes(root_dir, scene, camera):
                     image,
                     (int(bbox_x), int(bbox_y)),
                     (int(bbox_x + bbox_width), int(bbox_y + bbox_height)),
-                    (0, 255, 0), # Green
+                    (0, 255, 0),  # Green
                     2,
                 )
                 # Put object ID text
@@ -102,7 +102,7 @@ def display_video_with_bboxes(root_dir, scene, camera):
                     (int(bbox_x), int(bbox_y - 5)),
                     cv2.FONT_HERSHEY_SIMPLEX,
                     0.9,
-                    (0, 255, 0), # Green
+                    (0, 255, 0),  # Green
                     2,
                 )
 
@@ -119,5 +119,5 @@ if __name__ == "__main__":
     # root_directory = "D:\MTMMC"  # Windows
     root_directory = "/Volumes/HDD/MTMMC"  # Mac
     selected_scene = "s10"
-    selected_camera = "c16"
+    selected_camera = "c07"
     display_video_with_bboxes(root_directory, selected_scene, selected_camera)
