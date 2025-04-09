@@ -32,3 +32,8 @@ boxmot
 scipy
 Pillow
 numpy
+
+
+# MLOPS
+mlflow
+dagshub
