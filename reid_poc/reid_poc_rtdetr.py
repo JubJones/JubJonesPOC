@@ -1,550 +1,595 @@
-import itertools
+# -*- coding: utf-8 -*-
 import os
 import sys
 import time
+import re # Added for sorting
 from pathlib import Path
+from collections import defaultdict, deque
+from typing import Dict, List, Tuple, Optional, Any, Union, Set # Added Set
 
 import cv2
-import matplotlib.pyplot as plt
 import numpy as np
 import torch
-from boxmot.appearance.reid_auto_backend import ReidAutoBackend
-from scipy.spatial.distance import cosine as cosine_distance
-from ultralytics import RTDETR
+# Removed torchvision detector import
 
-# --- Configuration ---
-DETECTOR_MODEL_PATH = "rtdetr-l.pt"
+# --- Ultralytics Import ---
+try:
+    from ultralytics import RTDETR
+except ImportError as e:
+    print(f"FATAL ERROR: Failed to import ultralytics. Is it installed (pip install ultralytics)? Error: {e}")
+    sys.exit(1)
+# --- End Ultralytics Import ---
 
-# Define the ReID models to use
-REID_CONFIGS = [
-    {"name": "OSNet", "weights": "osnet_x0_25_msmt17.pt", "active": True},
-    {"name": "CLIP", "weights": "clip_market1501.pt", "active": True},
-]
-
-# Filter for active models
-ACTIVE_REID_CONFIGS = [config for config in REID_CONFIGS if config.get("active", True)]
-if not ACTIVE_REID_CONFIGS:
-    print("FATAL ERROR: No active ReID models configured in REID_CONFIGS.")
+# --- BoxMOT Imports ---
+try:
+    from boxmot import create_tracker
+    import boxmot as boxmot_root_module
+    BOXMOT_PATH = Path(boxmot_root_module.__file__).parent
+    print(f"DEBUG: Found BoxMOT installation at: {BOXMOT_PATH}")
+except ImportError as e:
+    print(f"FATAL ERROR: Failed to import boxmot. Is it installed? Error: {e}")
     sys.exit(1)
 
-REID_MODEL_NAMES = [config["name"] for config in ACTIVE_REID_CONFIGS]
+from boxmot.appearance.reid_auto_backend import ReidAutoBackend
+from boxmot.appearance.backends.base_backend import BaseModelBackend
+from boxmot.trackers.basetracker import BaseTracker
+# --- End BoxMOT Imports ---
 
-IMAGE_PATHS = [
-    "/Users/krittinsetdhavanich/Downloads/JubJonesPOC/reid_poc/test_images/campus/s47/c1_000217.jpg",
-    "/Users/krittinsetdhavanich/Downloads/JubJonesPOC/reid_poc/test_images/campus/s47/c1_000352.jpg",
-    # "/Users/krittinsetdhavanich/Downloads/JubJonesPOC/reid_poc/test_images/campus/s47/c1_000352.jpg",
-    # "/Users/krittinsetdhavanich/Downloads/JubJonesPOC/reid_poc/test_images/campus/s47/c3_000000.jpg",
-]
+from scipy.spatial.distance import cosine as cosine_distance
 
-PERSON_CLASS_ID = 0  # COCO class ID for 'person'
-CONFIDENCE_THRESHOLD = 0.5  # Minimum detection confidence
-REID_SIMILARITY_THRESHOLD = 0.7  # Threshold applied to similarity scores
+# --- Configuration ---
+# Detector Configuration (RT-DETR)
+DETECTOR_MODEL_PATH = "rtdetr-l.pt" # Path to your RT-DETR model weights
+PERSON_CLASS_ID = 0 # COCO class ID for 'person' in Ultralytics models is typically 0
+CONFIDENCE_THRESHOLD = 0.5 # Minimum detection confidence
 
+# Re-ID Configuration (OSNet)
+REID_MODEL_WEIGHTS = Path("osnet_x0_25_msmt17.pt")
+REID_SIMILARITY_THRESHOLD = 0.65
+GALLERY_EMA_ALPHA = 0.9
+REID_REFRESH_INTERVAL = 10 # How often (in frames) to re-run ReID for existing tracks
+
+# --- Tracker Configuration (ByteTrack) ---
+TRACKER_TYPE = 'bytetrack'
+BYTETRACK_CONFIG_PATH: Optional[Path] = None # Set dynamically
+
+# --- MTMMC Dataset Configuration ---
+DATASET_BASE_PATH = r"D:\MTMMC"
+# DATASET_BASE_PATH = "/Volumes/HDD/MTMMC"
+SELECTED_SCENE = "s10"
+SELECTED_CAMERAS = ["c09", "c12", "c13", "c16"]
+
+# --- General Configuration ---
+SELECTED_DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+
+# --- Visualization ---
+DRAW_BOUNDING_BOXES = True
+SHOW_TRACK_ID = True
+SHOW_GLOBAL_ID = True
+WINDOW_NAME = "Multi-Camera Tracking & Re-ID (RTDETR + ByteTrack + OSNet)" # Updated Window Name
+DISPLAY_WAIT_MS = 1
+MAX_DISPLAY_WIDTH = 1920
 
 # --- Helper Functions ---
 
+def sorted_alphanumeric(data):
+    """Sorts a list of strings alphanumerically (handling numbers correctly)."""
+    convert = lambda text: int(text) if text.isdigit() else text.lower()
+    alphanum_key = lambda key: [convert(c) for c in re.split("([0-9]+)", key)]
+    return sorted(data, key=alphanum_key)
 
-def get_device():
-    """Selects the best available compute device."""
-    # Prioritize MPS if available on Mac, then CUDA, then CPU
-    if torch.backends.mps.is_available() and torch.backends.mps.is_built():
+def get_and_set_device() -> torch.device:
+    """Selects the best available compute device and sets the global SELECTED_DEVICE."""
+    global SELECTED_DEVICE
+    print("--- Determining Device ---")
+    # Use MPS if available (Apple Silicon), otherwise CUDA, fallback to CPU
+    if hasattr(torch.backends, 'mps') and torch.backends.mps.is_available() and torch.backends.mps.is_built():
+         try:
+             device = torch.device("mps")
+             print("Attempting to use Metal Performance Shaders (MPS) device.")
+             _ = torch.tensor([1.0], device="mps") + torch.tensor([1.0], device="mps") # Quick test
+             print("MPS device confirmed.")
+             SELECTED_DEVICE = device
+             return device
+         except Exception as e: print(f"MPS reported available, but test failed ({e}). Falling back...")
+    elif torch.cuda.is_available():
         try:
-            _ = torch.tensor([1.0], device="mps") + torch.tensor([1.0], device="mps")
-            print("Using Metal Performance Shaders (MPS) device.")
-            return torch.device("mps")
-        except Exception as e:
-            print(f"MPS reported available, but test failed ({e}). Falling back...")
+            device = torch.device("cuda")
+            print(f"Attempting to use CUDA device: {torch.cuda.get_device_name(device)}")
+            _ = torch.tensor([1.0], device="cuda") + torch.tensor([1.0], device="cuda")
+            print("CUDA device confirmed.")
+            SELECTED_DEVICE = device
+            return device
+        except Exception as e: print(f"CUDA reported available, but test failed ({e}). Falling back...")
 
-    if torch.cuda.is_available():
-        print("Using CUDA device.")
-        return torch.device("cuda")
-    else:
-        print("Using CPU device.")
-        return torch.device("cpu")
+    device = torch.device("cpu")
+    print("Using CPU device.")
+    SELECTED_DEVICE = device
+    return device
 
 
-def calculate_cosine_similarity(
-    feat1: np.ndarray | None, feat2: np.ndarray | None
-) -> float:
-    """Calculates cosine similarity between two feature vectors."""
-    if feat1 is None or feat2 is None:
-        return 0.0
-    feat1 = feat1.flatten()
-    feat2 = feat2.flatten()
-    if feat1.shape != feat2.shape or feat1.size == 0 or feat2.size == 0:
-        return 0.0
-    if np.all(feat1 == 0) or np.all(feat2 == 0):
-        return 0.0
-    if not np.isfinite(feat1).all() or not np.isfinite(feat2).all():
-        return 0.0
-
+def calculate_cosine_similarity(feat1: Optional[np.ndarray], feat2: Optional[np.ndarray]) -> float:
+    """Calculates cosine similarity between two feature vectors. Handles None inputs."""
+    if feat1 is None or feat2 is None: return 0.0
+    feat1 = feat1.flatten(); feat2 = feat2.flatten()
+    if feat1.shape != feat2.shape or feat1.size == 0: return 0.0
+    if np.all(feat1 == 0) or np.all(feat2 == 0): return 0.0
+    if not np.isfinite(feat1).all() or not np.isfinite(feat2).all(): return 0.0
     try:
-        # Ensure inputs are float64 for scipy's cosine distance
         distance = cosine_distance(feat1.astype(np.float64), feat2.astype(np.float64))
-        distance = max(0.0, float(distance))
-    except Exception as e:
-        # print(f"Error calculating cosine distance: {e}") # Less verbose
-        return 0.0
-
+        distance = np.clip(float(distance), 0.0, 2.0) # Clip distance
+    except Exception as e: print(f"Error calculating cosine distance: {e}"); return 0.0
     similarity = 1.0 - distance
-    return float(np.clip(similarity, 0.0, 1.0))
+    return float(np.clip(similarity, 0.0, 1.0)) # Clip similarity
 
 
-def detect_persons(image_path: str, detector_model) -> list[dict]:
-    """
-    Detects ALL persons in an image above a threshold.
+# --- Main Processing Class ---
 
-    Args:
-        image_path: Path to the input image.
-        detector_model: Loaded RTDETR model.
+class MultiCameraPipeline:
+    def __init__(self,
+                 detector_weights_path: str, # Path for RTDETR model
+                 reid_weights_path: Path,
+                 tracker_config_path: Path,
+                 camera_ids: List[str],
+                 device: torch.device):
+        self.device = device
+        self.camera_ids = camera_ids
+        print(f"\n--- Loading Models on Device: {self.device} ---")
 
-    Returns:
-        A list of dictionaries. Each dictionary represents a detected person
-        and contains {'bbox': [x1, y1, x2, y2], 'conf': float}.
-        Returns an empty list if no persons are detected or an error occurs.
-    """
-    if not os.path.exists(image_path):
-        print(f"Error: Image not found at {image_path}")
-        return []
-
-    try:
-        img_bgr = cv2.imread(image_path)
-        if img_bgr is None:
-            print(f"Error: Could not read image {image_path} with OpenCV.")
-            return []
-    except Exception as e:
-        print(f"Error reading image {image_path}: {e}")
-        return []
-
-    # Detect ALL Persons
-    detected_persons_info = []
-    try:
-        results = detector_model.predict(
-            img_bgr,
-            classes=[PERSON_CLASS_ID],
-            conf=CONFIDENCE_THRESHOLD,
-            verbose=False,
-        )
-
-        if results and results[0].boxes is not None and len(results[0].boxes) > 0:
-            boxes_xyxy = results[0].boxes.xyxy.cpu().numpy()
-            confs = results[0].boxes.conf.cpu().numpy()
-
-            for i in range(len(boxes_xyxy)):
-                detected_persons_info.append(
-                    {"bbox": boxes_xyxy[i].astype(int), "conf": float(confs[i])}
-                )
-
-    except Exception as e:
-        print(f"  Error during object detection in {os.path.basename(image_path)}: {e}")
-        return []
-
-    return detected_persons_info
-
-
-def plot_comparison(
-    img_path1,
-    person_data1,
-    person_index1,
-    img_path2,
-    person_data2,
-    person_index2,
-    similarities: dict,  # Changed: Accept dict of similarities
-    threshold: float,
-    model_names: list,  # Added: List of model names used
-):
-    """
-    Plots two images side-by-side, highlighting the compared persons and showing similarity for multiple models.
-    """
-    fig = None
-    try:
-        img1_bgr = cv2.imread(img_path1)
-        img2_bgr = cv2.imread(img_path2)
-        if img1_bgr is None or img2_bgr is None:
-            print(
-                f"Error: Could not read images for plotting: {img_path1} or {img_path2}"
-            )
-            return
-
-        # Convert BGR to RGB for matplotlib
-        img1_rgb = cv2.cvtColor(img1_bgr, cv2.COLOR_BGR2RGB)
-        img2_rgb = cv2.cvtColor(img2_bgr, cv2.COLOR_BGR2RGB)
-
-        # Determine box color - Use the first active model's result for consistency
-        primary_model_name = model_names[0]
-        primary_similarity = similarities.get(primary_model_name, 0.0)
-        color = (
-            (0, 255, 0) if primary_similarity >= threshold else (255, 0, 0)
-        )  # Green if primary model says same, Red otherwise
-        thickness = 2
-
-        # Draw boxes and labels
-        box1 = person_data1["bbox"]
-        box2 = person_data2["bbox"]
-        cv2.rectangle(
-            img1_rgb, (box1[0], box1[1]), (box1[2], box1[3]), color, thickness
-        )
-        cv2.rectangle(
-            img2_rgb, (box2[0], box2[1]), (box2[2], box2[3]), color, thickness
-        )
-        label1 = f"P{person_index1 + 1}"
-        label2 = f"P{person_index2 + 1}"
-        # Put text slightly inside the box if near top edge
-        text_y1 = box1[1] - 10 if box1[1] > 20 else box1[1] + 20
-        text_y2 = box2[1] - 10 if box2[1] > 20 else box2[1] + 20
-        cv2.putText(
-            img1_rgb,
-            label1,
-            (box1[0], text_y1),
-            cv2.FONT_HERSHEY_SIMPLEX,
-            0.9,
-            color,
-            thickness,
-        )
-        cv2.putText(
-            img2_rgb,
-            label2,
-            (box2[0], text_y2),
-            cv2.FONT_HERSHEY_SIMPLEX,
-            0.9,
-            color,
-            thickness,
-        )
-
-        # Create plot
-        fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(12, 7))  # Slightly taller figsize
-
-        ax1.imshow(img1_rgb)
-        ax1.set_title(f"{os.path.basename(img_path1)}\nPerson {person_index1 + 1}")
-        ax1.axis("off")
-        ax2.imshow(img2_rgb)
-        ax2.set_title(f"{os.path.basename(img_path2)}\nPerson {person_index2 + 1}")
-        ax2.axis("off")
-
-        # Create multi-line title with results for all models
-        title_lines = []
-        for name in model_names:
-            sim = similarities.get(name, None)
-            if sim is None:
-                result_str = f"{name}: Error/Skipped"
-            else:
-                result = "Same Person" if sim >= threshold else "Different Person"
-                result_str = f"{name}: {sim:.4f} ({result})"
-            title_lines.append(result_str)
-
-        fig.suptitle(
-            "Comparison Results (Threshold: {})\n".format(threshold)
-            + "\n".join(title_lines),
-            fontsize=12,
-            y=0.99,
-        )
-
-        plt.tight_layout(rect=[0, 0.03, 1, 0.92])  # Adjust layout
-        plt.show()
-
-    except Exception as e:
-        print(f"Error during plotting comparison: {e}")
-        if fig is not None:
-            plt.close(fig)
-
-
-if __name__ == "__main__":
-    # --- Prerequisite Checks ---
-    image_files_exist = True
-    for p in IMAGE_PATHS:
-        if not os.path.exists(p):
-            print(f"FATAL ERROR: Missing image file: {p}")
-            image_files_exist = False
-    if not image_files_exist:
-        print("Please ensure all image paths listed in IMAGE_PATHS are correct.")
-        sys.exit(1)
-    if len(IMAGE_PATHS) < 2:
-        print("FATAL ERROR: Need at least two images in IMAGE_PATHS to compare.")
-        sys.exit(1)
-
-    # --- Device Selection ---
-    DEVICE = get_device()
-
-    # --- Model Loading ---
-    print(f"\n--- Loading Models ---")
-    # Load Detector
-    try:
-        print(f"Loading RTDETR detector from: {DETECTOR_MODEL_PATH}")
-        detector = RTDETR(DETECTOR_MODEL_PATH)
-        detector.to(DEVICE)
-        _ = detector.predict(
-            np.zeros((640, 640, 3), dtype=np.uint8), verbose=False
-        )  # Warmup
-        print("RTDETR Detector loaded successfully.")
-    except Exception as e:
-        print(f"FATAL ERROR loading detector: {e}")
-        sys.exit(1)
-
-    # Load ReID Models
-    reid_backends = {}
-    print(f"\n--- Loading ReID Models ({', '.join(REID_MODEL_NAMES)}) ---")
-    for config in ACTIVE_REID_CONFIGS:
-        model_name = config["name"]
-        weights_identifier = config["weights"]
-        print(f"Loading {model_name} (weights: {weights_identifier})...")
+        # 1. Load Detector (RT-DETR)
+        self.detector = None
         try:
-            weights_path_obj = Path(weights_identifier)
+            print(f"Loading RTDETR detector from: {detector_weights_path}")
+            self.detector = RTDETR(detector_weights_path)
+            self.detector.to(self.device)
+            # Optional: Warmup RT-DETR
+            # print("Warming up RTDETR detector...")
+            # self.detector.predict(np.zeros((640, 640, 3), dtype=np.uint8), verbose=False, device=self.device)
+            print("RTDETR Detector loaded successfully.")
+        except Exception as e: print(f"FATAL ERROR loading RTDETR detector: {e}"); sys.exit(1)
 
+        # 2. Load ReID Model
+        self.reid_model: Optional[BaseModelBackend] = None
+        try:
+            print(f"Loading SHARED OSNet ReID model from: {reid_weights_path}")
+            reid_device_specifier = self._get_reid_device_specifier_string(self.device)
+            print(f"Attempting ReID model load onto device specifier: '{reid_device_specifier}'")
             reid_model_handler = ReidAutoBackend(
-                weights=weights_path_obj, device=DEVICE, half=False
+                weights=reid_weights_path, device=reid_device_specifier, half=False
             )
-            backend = reid_model_handler.model
-            if hasattr(backend, "warmup"):
-                print(f"Warming up {model_name}...")
-                # warmup model by running inference once
-                backend.warmup()
-            reid_backends[model_name] = backend
-            print(f"{model_name} ReID Model loaded successfully.")
-        except Exception as e:
-            print(f"WARNING: Failed loading {model_name} ReID model: {e}")
-            print(f"Skipping {model_name} due to loading error.")
+            self.reid_model = reid_model_handler.model
+            if hasattr(self.reid_model, "warmup"):
+                print("Warming up OSNet ReID model...")
+                self.reid_model.warmup()
+            print("OSNet ReID Model loaded.")
+        except Exception as e: print(f"FATAL ERROR loading ReID model: {e}"); sys.exit(1)
 
-    if not reid_backends:
-        print("FATAL ERROR: No ReID models were loaded successfully.")
-        sys.exit(1)
-
-    # Update list of names based on successful loads
-    ACTIVE_REID_MODEL_NAMES = list(reid_backends.keys())
-    print(f"Active ReID models for processing: {', '.join(ACTIVE_REID_MODEL_NAMES)}")
-
-    # --- Feature Extraction for All Images ---
-    print("\n--- Detecting Persons and Extracting Features from All Images ---")
-    all_image_data = {}
-    processing_times = {}  # Stores batch extraction times per image/model
-
-    for img_path in IMAGE_PATHS:
-        img_basename = os.path.basename(img_path)
-        print(f"\nProcessing image: {img_basename}")
-
-        # 1. Detect Persons
-        detected_persons_basic_info = detect_persons(img_path, detector)
-
-        if not detected_persons_basic_info:
-            print(
-                f"  No persons detected in {img_basename}. Skipping feature extraction."
-            )
-            all_image_data[img_path] = []  # Mark as processed but no persons
-            continue
-        else:
-            print(f"  Detected {len(detected_persons_basic_info)} persons.")
-
-        # Prepare for feature extraction
-        all_boxes_xyxy = np.array([p["bbox"] for p in detected_persons_basic_info])
-        persons_processed_data = []
-        batch_extraction_times = {}
-        image_read_successful = (
-            False  # Flag to ensure image is read before extraction loop
-        )
-
+        # 3. Initialize Trackers
+        self.trackers: Dict[str, BaseTracker] = {}
+        print(f"\n--- Initializing {TRACKER_TYPE} Trackers ---")
+        if not tracker_config_path or not tracker_config_path.is_file():
+             print(f"FATAL ERROR: Tracker config not found: {tracker_config_path}"); sys.exit(1)
         try:
-            img_bgr = cv2.imread(img_path)
-            if img_bgr is None:
-                raise ValueError(
-                    f"Failed to read image {img_basename} for feature extraction."
+            tracker_device_str = str(self.device)
+            for cam_id in self.camera_ids:
+                tracker_instance = create_tracker(
+                    tracker_type=TRACKER_TYPE, tracker_config=tracker_config_path,
+                    reid_weights=None, device=tracker_device_str, half=False, per_class=False
                 )
-            image_read_successful = True
+                self.trackers[cam_id] = tracker_instance
+                if hasattr(tracker_instance, 'reset'): tracker_instance.reset()
+                print(f"Initialized {TRACKER_TYPE} for camera {cam_id}")
+            print(f"Initialized {len(self.trackers)} tracker instances.")
+        except Exception as e: print(f"FATAL ERROR initializing trackers: {e}"); sys.exit(1)
 
-            # 2. Extract features for each ReID model
-            features_per_model_per_person = [
-                {} for _ in range(len(detected_persons_basic_info))
-            ]
+        # State Management (Same as before)
+        self.reid_gallery: Dict[int, np.ndarray] = {}
+        self.track_to_global_id: Dict[Tuple[str, int], int] = {}
+        self.next_global_id = 1
+        self.last_seen_track_ids: Dict[str, Set[int]] = defaultdict(set)
+        self.track_last_reid_frame: Dict[Tuple[str, int], int] = {}
 
-            for model_name, reid_backend in reid_backends.items():
-                print(f"  Extracting features using {model_name}...")
-                t_start = time.time()
-                model_features = None  # Initialize features for this model
-                try:
-                    # Extract features for all boxes in the image at once
-                    model_features = reid_backend.get_features(
-                        all_boxes_xyxy.astype(np.float32), img_bgr
-                    )
-                    t_end = time.time()
-                    batch_duration = t_end - t_start
-                    batch_extraction_times[model_name] = batch_duration
-                    print(
-                        f"    Extracted {model_features.shape[0] if model_features is not None else 'None'} features in {batch_duration:.4f} seconds."
-                    )
 
-                    # --- Validation Checks ---
-                    if model_features is None or model_features.shape[0] != len(
-                        detected_persons_basic_info
-                    ):
-                        print(
-                            f"    Error: {model_name} feature extraction mismatch or failure. Expected {len(detected_persons_basic_info)}, got {model_features.shape[0] if model_features is not None else 'None'}. Storing None for this model."
-                        )
-                        batch_extraction_times[model_name] = (
-                            None  # Mark time as invalid
-                        )
-                        # Assign None to all persons for this model
-                        for i in range(len(detected_persons_basic_info)):
-                            features_per_model_per_person[i][model_name] = None
-                        continue  # Go to next model
+    def _get_reid_device_specifier_string(self, device: torch.device) -> str:
+        """Determines the device string specifier needed by ReidAutoBackend."""
+        if device.type == 'cuda':
+            idx = device.index if device.index is not None else 0
+            return str(idx)
+        elif device.type == 'mps':
+            return 'mps'
+        else: return 'cpu'
 
-                    if not np.isfinite(model_features).all():
-                        print(
-                            f"    Error: {model_name} features contain NaN/Inf. Storing None for this model."
-                        )
-                        batch_extraction_times[model_name] = (
-                            None  # Mark time as invalid
-                        )
-                        for i in range(len(detected_persons_basic_info)):
-                            features_per_model_per_person[i][model_name] = None
-                        continue  # Go to next model
+    def _detect_persons(self, frame_bgr: np.ndarray) -> List[Dict[str, Any]]:
+        """Detects persons in a single frame using RT-DETR."""
+        detections: List[Dict[str, Any]] = []
+        if self.detector is None or frame_bgr is None or frame_bgr.size == 0:
+            return detections
+        try:
+            # RTDETR predict call - uses BGR numpy array directly
+            results = self.detector.predict(
+                frame_bgr,
+                classes=[PERSON_CLASS_ID],      # Filter for persons during detection
+                conf=CONFIDENCE_THRESHOLD,
+                verbose=False,                  # Suppress ultralytics console output
+                device=self.device              # Specify device for inference
+            )
 
-                    # --- Assign features ---
-                    for i in range(len(detected_persons_basic_info)):
-                        features_per_model_per_person[i][model_name] = model_features[i]
+            # Parse RTDETR results object
+            if results and results[0].boxes is not None and len(results[0].boxes) > 0:
+                boxes_xyxy = results[0].boxes.xyxy.cpu().numpy()
+                confs = results[0].boxes.conf.cpu().numpy()
+                # cls_ids = results[0].boxes.cls.cpu().numpy() # Class IDs if needed
 
-                except Exception as e:
-                    print(f"    ERROR during {model_name} feature extraction: {e}")
-                    batch_extraction_times[model_name] = None  # Mark time as invalid
-                    # Assign None to all persons for this model if extraction failed
-                    for i in range(len(detected_persons_basic_info)):
-                        features_per_model_per_person[i][model_name] = None
-
-            # 3. Assemble final data structure for the image
-            any_successful_extraction = False
-            for i, basic_info in enumerate(detected_persons_basic_info):
-                # Check if at least one model successfully extracted features for *this* person
-                person_has_valid_feature = any(
-                    feat is not None
-                    for feat in features_per_model_per_person[i].values()
-                )
-
-                if person_has_valid_feature:
-                    persons_processed_data.append(
-                        {
-                            "bbox": basic_info["bbox"],
-                            "conf": basic_info["conf"],
-                            "features": features_per_model_per_person[
-                                i
-                            ],  # Dict of features by model name
-                        }
-                    )
-                    any_successful_extraction = True
-                else:
-                    print(
-                        f"    Skipping Person {i + 1} in {img_basename} - feature extraction failed for all models."
-                    )
-
-            if any_successful_extraction:
-                all_image_data[img_path] = persons_processed_data
-                processing_times[img_path] = batch_extraction_times  # Store batch times
-                print(
-                    f"  Successfully processed {len(persons_processed_data)} persons with features in {img_basename}."
-                )
-            else:
-                print(
-                    f"  Warning: Feature extraction failed for all detected persons/models in {img_basename}. Skipping this image."
-                )
-                all_image_data[img_path] = []  # Indicate failed extraction overall
-
+                for box, score in zip(boxes_xyxy, confs):
+                    # Class filtering already done by predict()
+                    x1, y1, x2, y2 = box
+                    if x2 > x1 and y2 > y1: # Basic box validity check
+                         detections.append({
+                             'bbox_xyxy': box.astype(np.float32),
+                             'conf': float(score),
+                             'class_id': PERSON_CLASS_ID # Store the class ID we requested
+                         })
         except Exception as e:
-            print(
-                f"  Error processing image {img_basename} for feature extraction: {e}"
-            )
-            all_image_data[img_path] = []  # Indicate failure
+            print(f"E: RTDETR Detection error: {e}")
+            # import traceback; traceback.print_exc() # Uncomment for detailed errors
+        return detections
 
-    # --- Comparisons and Plotting ---
-    print("\n--- Performing Pairwise Comparisons ---")
-    image_pairs = list(itertools.combinations(IMAGE_PATHS, 2))
+    def _extract_features_for_tracks(self,
+                                     frame_bgr: np.ndarray,
+                                     tracked_dets_np: np.ndarray
+                                     ) -> Dict[int, np.ndarray]:
+        """Extracts Re-ID features for the *provided subset* of tracked persons."""
+        # (Identical to previous version)
+        features: Dict[int, np.ndarray] = {}
+        if self.reid_model is None or frame_bgr is None or frame_bgr.size == 0 or tracked_dets_np.shape[0] == 0:
+            return features
+        bboxes_xyxy_list = tracked_dets_np[:, 0:4]
+        track_ids = tracked_dets_np[:, 4]
+        bboxes_np = np.array(bboxes_xyxy_list).astype(np.float32)
+        if bboxes_np.ndim != 2 or bboxes_np.shape[1] != 4:
+             print(f"W: Invalid bbox shape for FE. Shape: {bboxes_np.shape}")
+             return features
+        try:
+            batch_features = self.reid_model.get_features(bboxes_np, frame_bgr)
+            if batch_features is not None and len(batch_features) == len(track_ids):
+                for i, det_feature in enumerate(batch_features):
+                    if det_feature is not None and np.isfinite(det_feature).all():
+                        current_track_id = int(track_ids[i])
+                        features[current_track_id] = det_feature
+        except Exception as e: print(f"E: FE call failed: {e}")
+        return features
 
-    if not image_pairs:
-        print("Need at least two images processed successfully to compare.")
-        sys.exit(0)
+    def _perform_reid_on_tracks(self,
+                                features_per_track: Dict[Tuple[str, int], np.ndarray]
+                               ) -> Dict[Tuple[str, int], Optional[int]]:
+        """Compares features *only for triggered tracks* against the global gallery."""
+        # (Identical to previous version)
+        assigned_global_ids: Dict[Tuple[str, int], Optional[int]] = {}
+        if not features_per_track: return assigned_global_ids
+        valid_gallery_ids = [gid for gid, emb in self.reid_gallery.items() if emb is not None and np.isfinite(emb).all()]
+        valid_gallery_embeddings = [self.reid_gallery[gid] for gid in valid_gallery_ids]
+        match_counts, new_id_counts, update_counts = 0, 0, 0
+        for track_key, new_embedding in features_per_track.items():
+            assigned_global_ids[track_key] = None
+            if new_embedding is None or not np.isfinite(new_embedding).all(): continue
+            best_match_global_id, best_match_score = None, 0.0
+            if valid_gallery_ids:
+                similarities = [calculate_cosine_similarity(new_embedding, gal_emb) for gal_emb in valid_gallery_embeddings]
+                if similarities:
+                    max_similarity = max(similarities)
+                    if max_similarity >= REID_SIMILARITY_THRESHOLD:
+                        best_match_index = np.argmax(similarities)
+                        best_match_global_id = valid_gallery_ids[best_match_index]
+                        best_match_score = max_similarity
+            if best_match_global_id is not None:
+                assigned_global_id = best_match_global_id
+                assigned_global_ids[track_key] = assigned_global_id
+                self.track_to_global_id[track_key] = assigned_global_id
+                match_counts += 1
+                current_gallery_emb = self.reid_gallery.get(assigned_global_id)
+                if current_gallery_emb is not None:
+                    updated_embedding = (GALLERY_EMA_ALPHA * current_gallery_emb + (1 - GALLERY_EMA_ALPHA) * new_embedding)
+                    norm = np.linalg.norm(updated_embedding)
+                    self.reid_gallery[assigned_global_id] = updated_embedding / norm if norm > 1e-6 else updated_embedding
+                    update_counts +=1
+            else:
+                last_known_global_id = self.track_to_global_id.get(track_key, None)
+                if last_known_global_id is not None and last_known_global_id in self.reid_gallery:
+                    assigned_global_id = last_known_global_id
+                    assigned_global_ids[track_key] = assigned_global_id
+                    current_gallery_emb = self.reid_gallery.get(assigned_global_id)
+                    if current_gallery_emb is not None:
+                        updated_embedding = (GALLERY_EMA_ALPHA * current_gallery_emb + (1 - GALLERY_EMA_ALPHA) * new_embedding)
+                        norm = np.linalg.norm(updated_embedding)
+                        self.reid_gallery[assigned_global_id] = updated_embedding / norm if norm > 1e-6 else updated_embedding
+                        update_counts +=1
+                else:
+                    new_global_id = self.next_global_id
+                    self.next_global_id += 1
+                    assigned_global_ids[track_key] = new_global_id
+                    self.track_to_global_id[track_key] = new_global_id
+                    norm = np.linalg.norm(new_embedding)
+                    self.reid_gallery[new_global_id] = new_embedding / norm if norm > 1e-6 else new_embedding
+                    new_id_counts += 1
+        return assigned_global_ids
 
-    total_comparisons = 0
-    # Initialize comparison timing dict using only successfully loaded models
-    model_comparison_times = {name: 0.0 for name in ACTIVE_REID_MODEL_NAMES}
 
-    for img_path1, img_path2 in image_pairs:
-        base_name1 = os.path.basename(img_path1)
-        base_name2 = os.path.basename(img_path2)
-        print(f"\n--- Comparing [{base_name1}] vs [{base_name2}] ---")
+    def process_frame_batch(self, frames: Dict[str, Optional[np.ndarray]], frame_idx: int
+                            ) -> Tuple[Dict[str, List[Dict[str, Any]]], Dict[str, float]]:
+        """Detect (RTDETR) -> Track (ByteTrack) -> Conditionally Extract/Re-ID (OSNet)."""
+        # (Logic is identical to previous version, only _detect_persons call changed internally)
+        t_start_batch = time.time()
+        timings = {'detection_tracking': 0.0, 'feature_ext': 0.0, 'reid': 0.0, 'total': 0.0}
+        final_results_per_camera: Dict[str, List[Dict[str, Any]]] = defaultdict(list)
+        all_current_track_features: Dict[Tuple[str, int], np.ndarray] = {}
+        t_det_track_start = time.time()
+        current_frame_tracker_outputs: Dict[str, np.ndarray] = {}
+        current_frame_active_track_ids: Dict[str, Set[int]] = defaultdict(set)
+        tracks_needing_reid_this_frame: Set[Tuple[str, int]] = set()
+        tracks_to_extract_features_for: Dict[str, List[np.ndarray]] = defaultdict(list)
 
-        # Report extraction times for these images (if available)
-        times1 = processing_times.get(img_path1, {})
-        times2 = processing_times.get(img_path2, {})
-        if times1 or times2:  # Only print if times were recorded
-            print("  Batch Feature Extraction Times (seconds):")
-            for name in ACTIVE_REID_MODEL_NAMES:
-                t1 = times1.get(name, "N/A")
-                t2 = times2.get(name, "N/A")
-                # Format time only if it's a valid float
-                t1_str = f"{t1:.4f}" if isinstance(t1, float) else str(t1)
-                t2_str = f"{t2:.4f}" if isinstance(t2, float) else str(t2)
-                print(f"    {name}: {base_name1}={t1_str}, {base_name2}={t2_str}")
+        for cam_id, frame_bgr in frames.items():
+            tracker = self.trackers.get(cam_id)
+            if not tracker: continue
+            dummy_frame = np.zeros((100, 100, 3), dtype=np.uint8) if frame_bgr is None else frame_bgr
+            np_dets = np.empty((0, 6))
+            if frame_bgr is not None and frame_bgr.size > 0:
+                detections = self._detect_persons(frame_bgr) # Now uses RTDETR
+                if detections:
+                    np_dets = np.array([[*det['bbox_xyxy'], det['conf'], det['class_id']] for det in detections])
+            try:
+                tracked_dets_np = tracker.update(np_dets, dummy_frame)
+                current_frame_tracker_outputs[cam_id] = np.array(tracked_dets_np) if tracked_dets_np is not None and len(tracked_dets_np) > 0 else np.empty((0, 8))
+            except Exception as e:
+                print(f"E: Tracker update failed cam {cam_id}: {e}")
+                current_frame_tracker_outputs[cam_id] = np.empty((0, 8))
+            if current_frame_tracker_outputs[cam_id].shape[0] > 0:
+                previous_cam_track_ids = self.last_seen_track_ids.get(cam_id, set())
+                for track_data in current_frame_tracker_outputs[cam_id]:
+                    if len(track_data) >= 7:
+                        track_id = int(track_data[4])
+                        current_track_key = (cam_id, track_id)
+                        current_frame_active_track_ids[cam_id].add(track_id)
+                        is_newly_seen = track_id not in previous_cam_track_ids
+                        last_reid = self.track_last_reid_frame.get(current_track_key, -REID_REFRESH_INTERVAL)
+                        is_due_for_refresh = (frame_idx - last_reid) >= REID_REFRESH_INTERVAL
+                        if is_newly_seen or is_due_for_refresh:
+                            tracks_needing_reid_this_frame.add(current_track_key)
+                            tracks_to_extract_features_for[cam_id].append(track_data)
+                            self.track_last_reid_frame[current_track_key] = frame_idx
+        timings['detection_tracking'] = time.time() - t_det_track_start
+
+        t_feat_start = time.time()
+        extracted_features_this_frame: Dict[Tuple[str, int], np.ndarray] = {}
+        for cam_id, tracks_data_list in tracks_to_extract_features_for.items():
+            if tracks_data_list:
+                frame_bgr = frames.get(cam_id)
+                if frame_bgr is not None and frame_bgr.size > 0:
+                    tracks_data_np = np.array(tracks_data_list)
+                    features_this_cam = self._extract_features_for_tracks(frame_bgr, tracks_data_np)
+                    for track_id, feature in features_this_cam.items():
+                        extracted_features_this_frame[(cam_id, track_id)] = feature
+        timings['feature_ext'] = time.time() - t_feat_start
+
+        t_reid_start = time.time()
+        assigned_global_ids = self._perform_reid_on_tracks(extracted_features_this_frame)
+        timings['reid'] = time.time() - t_reid_start
+
+        for cam_id, tracked_dets_np in current_frame_tracker_outputs.items():
+            if tracked_dets_np.shape[0] > 0:
+                 for track_data in tracked_dets_np:
+                    if len(track_data) >= 7:
+                        x1, y1, x2, y2, track_id_float, conf, cls = track_data[0:7]
+                        track_id = int(track_id_float); cls = int(cls)
+                        current_track_key = (cam_id, track_id)
+                        if current_track_key in assigned_global_ids:
+                            global_id = assigned_global_ids[current_track_key]
+                        else:
+                            global_id = self.track_to_global_id.get(current_track_key, None)
+                            if global_id is not None: self.track_to_global_id[current_track_key] = global_id
+                        final_results_per_camera[cam_id].append({'bbox_xyxy': np.array([x1, y1, x2, y2], dtype=np.float32), 'track_id': track_id, 'global_id': global_id, 'conf': float(conf), 'class_id': cls})
+
+        self.last_seen_track_ids = current_frame_active_track_ids
+        all_active_keys_this_frame = set((cid, tid) for cid, tids in current_frame_active_track_ids.items() for tid in tids)
+        stale_reid_keys = set(self.track_last_reid_frame.keys()) - all_active_keys_this_frame
+        for key in stale_reid_keys: del self.track_last_reid_frame[key]
+        stale_global_id_keys = set(self.track_to_global_id.keys()) - all_active_keys_this_frame
+        for key in stale_global_id_keys: del self.track_to_global_id[key]
+
+        timings['total'] = time.time() - t_start_batch
+        return dict(final_results_per_camera), timings
+
+
+    def draw_annotations(self,
+                         frames: Dict[str, Optional[np.ndarray]],
+                         processed_results: Dict[str, List[Dict[str, Any]]]
+                         ) -> Dict[str, Optional[np.ndarray]]:
+        """Draws bounding boxes with track_id and global_id on frames."""
+        # (Identical to previous version)
+        annotated_frames: Dict[str, Optional[np.ndarray]] = {}
+        default_frame_h, default_frame_w = 1080, 1920
+        first_valid_frame_dims_set = False
+        for frame in frames.values():
+            if frame is not None and frame.size > 0:
+                 default_frame_h, default_frame_w = frame.shape[:2]; first_valid_frame_dims_set = True; break
+        for cam_id, frame in frames.items():
+             if frame is None or frame.size == 0:
+                  placeholder = np.zeros((default_frame_h, default_frame_w, 3), dtype=np.uint8)
+                  cv2.putText(placeholder, f"No Frame ({cam_id})", (30, 30), cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 0, 255), 2)
+                  annotated_frames[cam_id] = placeholder; continue
+             current_h, current_w = frame.shape[:2]; annotated_frame = frame.copy()
+             results_for_cam = processed_results.get(cam_id, [])
+             for track_info in results_for_cam:
+                  bbox_xyxy = track_info.get('bbox_xyxy'); track_id = track_info.get('track_id'); global_id = track_info.get('global_id'); conf = track_info.get('conf', 0.0)
+                  if bbox_xyxy is None: continue
+                  x1, y1, x2, y2 = map(int, bbox_xyxy); x1 = max(0, x1); y1 = max(0, y1); x2 = min(current_w, x2); y2 = min(current_h, y2)
+                  if x1 >= x2 or y1 >= y2: continue
+                  color = (255, 182, 193);
+                  if global_id is not None: seed = int(global_id) * 3 + 5; color = ((seed * 41) % 200 + 55, (seed * 17) % 200 + 55, (seed * 29) % 200 + 55)
+                  if DRAW_BOUNDING_BOXES: cv2.rectangle(annotated_frame, (x1, y1), (x2, y2), color, 2)
+                  label_parts = [];
+                  if SHOW_TRACK_ID and track_id is not None: label_parts.append(f"T:{track_id}")
+                  if SHOW_GLOBAL_ID: label_parts.append(f"G:{global_id}" if global_id is not None else "G:?")
+                  label = " ".join(label_parts)
+                  if label:
+                       (lw, lh), bl = cv2.getTextSize(label, cv2.FONT_HERSHEY_SIMPLEX, 0.6, 2); ly = y1 - 10 if y1 > (lh + 10) else y1 + lh + 5; ly = max(lh + 5, ly); lx = x1
+                       cv2.rectangle(annotated_frame, (lx, ly - lh - bl), (lx + lw, ly), color, cv2.FILLED)
+                       cv2.putText(annotated_frame, label, (lx, ly - bl//2), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0,0,0), 1, cv2.LINE_AA)
+             annotated_frames[cam_id] = annotated_frame
+        return annotated_frames
+
+
+# --- Main Execution ---
+if __name__ == "__main__":
+    # Determine device first
+    selected_device = get_and_set_device()
+
+    # --- Find BoxMOT Path and Config ---
+    BYTETRACK_CONFIG_PATH = BOXMOT_PATH / "configs" / f"{TRACKER_TYPE}.yaml"
+    # (Fallback logic kept)
+    if not BYTETRACK_CONFIG_PATH.is_file():
+         print(f"W: Could not find {TRACKER_TYPE}.yaml at {BYTETRACK_CONFIG_PATH}")
+         script_dir = Path(__file__).parent.resolve()
+         fallback_paths = [
+             script_dir / "boxmot" / "configs" / f"{TRACKER_TYPE}.yaml",
+             script_dir / "configs" / f"{TRACKER_TYPE}.yaml",
+             script_dir / f"{TRACKER_TYPE}.yaml"]
+         found = False
+         for i, path in enumerate(fallback_paths):
+             if path.is_file(): BYTETRACK_CONFIG_PATH = path; print(f"Found config at fallback {i+1}: {BYTETRACK_CONFIG_PATH}"); found = True; break
+         if not found: print(f"FATAL ERROR: Could not find {TRACKER_TYPE}.yaml config."); sys.exit(1)
+
+    # Validate ReID weights path
+    if not REID_MODEL_WEIGHTS.is_file():
+        print(f"W: ReID weights not found at: {REID_MODEL_WEIGHTS}")
+        script_dir = Path(__file__).parent.resolve()
+        fallback_reid_path = script_dir / REID_MODEL_WEIGHTS.name
+        if fallback_reid_path.is_file(): REID_MODEL_WEIGHTS = fallback_reid_path; print(f"Found ReID weights at fallback: {REID_MODEL_WEIGHTS}")
+        else: print(f"FATAL ERROR: ReID weights not found at {REID_MODEL_WEIGHTS} or {fallback_reid_path}."); sys.exit(1)
+
+    # Validate Detector weights path
+    detector_path = Path(DETECTOR_MODEL_PATH)
+    if not detector_path.is_file():
+        print(f"W: Detector weights not found at: {detector_path}")
+        script_dir = Path(__file__).parent.resolve()
+        fallback_detector_path = script_dir / detector_path.name
+        if fallback_detector_path.is_file(): DETECTOR_MODEL_PATH = str(fallback_detector_path); print(f"Found detector weights at fallback: {DETECTOR_MODEL_PATH}")
+        else: print(f"FATAL ERROR: Detector weights not found at {detector_path} or {fallback_detector_path}."); sys.exit(1)
+
+
+    # --- Construct Camera Paths and Validate ---
+    # (Identical to previous version)
+    camera_base_dirs = {}
+    valid_cameras = []
+    base_scene_path = Path(DATASET_BASE_PATH) / "train" / "train" / SELECTED_SCENE
+    if not base_scene_path.is_dir(): print(f"FATAL ERROR: Scene dir not found: {base_scene_path}"); sys.exit(1)
+    print("\n--- Validating Camera Directories ---")
+    for cam_id in SELECTED_CAMERAS:
+        rgb_dir = base_scene_path / cam_id / "rgb"
+        if rgb_dir.is_dir(): camera_base_dirs[cam_id] = str(rgb_dir); valid_cameras.append(cam_id); print(f"Found valid dir: {rgb_dir}")
+        else: print(f"W: Dir not found for {cam_id}. Skipping.")
+    if not valid_cameras: print(f"FATAL ERROR: No valid cameras found."); sys.exit(1)
+    print(f"Processing cameras: {valid_cameras}")
+
+    # --- Determine Frame Sequence ---
+    # (Identical to previous version)
+    image_filenames = []
+    try:
+        first_cam_id = valid_cameras[0]; first_cam_dir = camera_base_dirs[first_cam_id]
+        image_filenames = sorted_alphanumeric([f for f in os.listdir(first_cam_dir) if f.lower().endswith(".jpg")])
+        if not image_filenames: raise ValueError(f"No JPGs in {first_cam_dir}")
+        print(f"\nFound {len(image_filenames)} frames based on {first_cam_id}.")
+    except Exception as e: print(f"FATAL ERROR listing image files: {e}"); sys.exit(1)
+
+    # --- Initialize Pipeline ---
+    pipeline = MultiCameraPipeline(
+        detector_weights_path=DETECTOR_MODEL_PATH, # Pass RTDETR path
+        reid_weights_path=REID_MODEL_WEIGHTS,
+        tracker_config_path=BYTETRACK_CONFIG_PATH,
+        camera_ids=valid_cameras,
+        device=selected_device
+    )
+
+    # --- Initialize Display Window ---
+    cv2.namedWindow(WINDOW_NAME, cv2.WINDOW_NORMAL)
+
+    # --- Processing Loop ---
+    start_time = time.time(); actual_frames_processed = 0
+    print("\n--- Starting Frame Processing Loop ---")
+
+    for frame_idx, current_filename in enumerate(image_filenames):
+        t_frame_start = time.time()
+
+        # --- Load Frames ---
+        # (Identical to previous version)
+        current_frames_bgr: Dict[str, Optional[np.ndarray]] = {}
+        valid_frame_loaded = False
+        for cam_id in valid_cameras:
+            image_path = os.path.join(camera_base_dirs[cam_id], current_filename)
+            img = None
+            if os.path.exists(image_path):
+                try: img = cv2.imread(image_path)
+                except Exception as e: print(f"E: reading {image_path}: {e}")
+                if img is not None and img.size > 0: current_frames_bgr[cam_id] = img; valid_frame_loaded = True
+                else: current_frames_bgr[cam_id] = None
+            else: current_frames_bgr[cam_id] = None
+        if not valid_frame_loaded: print(f"W: No valid frames index {frame_idx}. Processing empty.")
+        actual_frames_processed += 1
+
+        # --- Process Batch ---
+        processed_results, timings = pipeline.process_frame_batch(current_frames_bgr, frame_idx)
+
+        # --- Print Timings ---
+        # (Identical to previous version)
+        t_frame_end = time.time(); frame_proc_time = t_frame_end - t_frame_start
+        if frame_idx % 10 == 0 or frame_idx < 5:
+            print(f"\n--- Frame {frame_idx} ({current_filename}) --- Frame Proc Time: {frame_proc_time*1000:.1f} ms ---")
+            print(f"  Pipeline Timings (ms): Total={timings['total']*1000:.1f} | Detect+Track={timings['detection_tracking']*1000:.1f} | FeatExtract={timings['feature_ext']*1000:.1f} | ReID={timings['reid']*1000:.1f}")
+            track_count = sum(len(tracks) for tracks in processed_results.values()); print(f"  Active Tracks: {track_count}")
+
+        # --- Draw Annotations ---
+        annotated_frames = pipeline.draw_annotations(current_frames_bgr, processed_results)
+
+        # --- Visualization ---
+        # (Identical to previous version)
+        valid_annotated = [f for f in annotated_frames.values() if f is not None and f.size > 0] # Simplified collection
+        combined_display = None
+        if valid_annotated:
+            num_cams = len(valid_annotated)
+            rows = int(np.ceil(np.sqrt(num_cams))); cols = int(np.ceil(num_cams / rows))
+            try: target_h, target_w = valid_annotated[0].shape[:2]
+            except IndexError: target_h, target_w = 480, 640
+            combined_h, combined_w = rows * target_h, cols * target_w
+            combined_display = np.zeros((combined_h, combined_w, 3), dtype=np.uint8)
+            frame_num = 0
+            for r in range(rows):
+                for c in range(cols):
+                    if frame_num < num_cams:
+                        f = valid_annotated[frame_num]
+                        if f.shape[0]!= target_h or f.shape[1]!= target_w:
+                             try: f = cv2.resize(f, (target_w, target_h), interpolation=cv2.INTER_AREA)
+                             except Exception: f = np.zeros((target_h, target_w, 3), dtype=np.uint8)
+                        combined_display[r*target_h:(r+1)*target_h, c*target_w:(c+1)*target_w] = f
+                        frame_num += 1
+            disp_h, disp_w = combined_display.shape[:2]
+            if disp_w > MAX_DISPLAY_WIDTH:
+                scale = MAX_DISPLAY_WIDTH / disp_w; disp_h = int(disp_h * scale); disp_w = MAX_DISPLAY_WIDTH
+                combined_display = cv2.resize(combined_display, (disp_w, disp_h), interpolation=cv2.INTER_AREA)
         else:
-            print(
-                "  Batch Feature Extraction Times: Not available (extraction may have failed)."
-            )
+             combined_display = np.zeros((480, 640, 3), dtype=np.uint8)
+             cv2.putText(combined_display, "No Frames", (50, 50), cv2.FONT_HERSHEY_SIMPLEX, 1, (255, 255, 255), 2)
+        cv2.imshow(WINDOW_NAME, combined_display)
+        key = cv2.waitKey(DISPLAY_WAIT_MS) & 0xFF
+        if key == ord('q'): print("Quitting..."); break
+        elif key == ord('p'): print("Paused."); cv2.waitKey(0)
 
-        persons1 = all_image_data.get(img_path1, [])
-        persons2 = all_image_data.get(img_path2, [])
-
-        if not persons1 or not persons2:
-            print(
-                f"  Skipping comparison: No valid persons with features available in one or both images ('{base_name1}': {len(persons1)} persons, '{base_name2}': {len(persons2)} persons)."
-            )
-            continue
-
-        print(
-            f"  Comparing {len(persons1)} persons from {base_name1} with {len(persons2)} persons from {base_name2}"
-        )
-
-        for i, p1_data in enumerate(persons1):
-            for j, p2_data in enumerate(persons2):
-                total_comparisons += len(ACTIVE_REID_MODEL_NAMES)
-                similarities = {}
-                results_text = []
-
-                # Compare using each active model
-                for model_name in ACTIVE_REID_MODEL_NAMES:
-                    t_sim_start = time.time()
-                    feature1 = p1_data["features"].get(model_name)
-                    feature2 = p2_data["features"].get(model_name)
-
-                    # Calculate similarity only if both features are valid numpy arrays
-                    if isinstance(feature1, np.ndarray) and isinstance(
-                        feature2, np.ndarray
-                    ):
-                        sim = calculate_cosine_similarity(feature1, feature2)
-                        similarities[model_name] = sim
-                        is_same = sim >= REID_SIMILARITY_THRESHOLD
-                        results_text.append(
-                            f"{model_name}={sim:.3f} {'[SAME]' if is_same else '[DIFF]'}"
-                        )
-                    else:
-                        similarities[model_name] = None
-                        results_text.append(f"{model_name}=N/A [SKIP]")
-
-                    t_sim_end = time.time()
-                    # Add time only if calculation was performed
-                    if isinstance(feature1, np.ndarray) and isinstance(
-                        feature2, np.ndarray
-                    ):
-                        model_comparison_times[model_name] += t_sim_end - t_sim_start
-
-                print(
-                    f"  - {base_name1} P{i + 1} vs {base_name2} P{j + 1}: {' | '.join(results_text)}"
-                )
-
-                # Plot the comparison, passing the dictionary of similarities
-                plot_comparison(
-                    img_path1,
-                    p1_data,
-                    i,
-                    img_path2,
-                    p2_data,
-                    j,
-                    similarities,
-                    REID_SIMILARITY_THRESHOLD,
-                    ACTIVE_REID_MODEL_NAMES,
-                )
-
-    print("\n--- POC Finished ---")
+    # --- Cleanup ---
+    # (Identical to previous version)
+    end_time = time.time(); total_time = end_time - start_time
+    print(f"\n--- Pipeline Finished ---")
+    print(f"Processed {actual_frames_processed} frame indices.")
+    print(f"Total time: {total_time:.2f} seconds.")
+    if actual_frames_processed > 0 and total_time > 0: print(f"Avg FPS: {actual_frames_processed / total_time:.2f}")
+    else: print("Avg FPS: N/A")
+    cv2.destroyAllWindows()
+    print("Resources released.")
