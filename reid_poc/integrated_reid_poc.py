@@ -22,7 +22,9 @@ REID_MODEL_WEIGHTS = "osnet_x0_25_msmt17.pt" # OSNet model for Re-ID
 
 # --- MTMMC Dataset Configuration ---
 # !! MODIFY THESE PATHS !!
-DATASET_BASE_PATH = "/Volumes/HDD/MTMMC" # Set the root path of the MTMMC dataset
+# Set the root path of the MTMMC dataset (Example for Windows)
+DATASET_BASE_PATH = r"D:\MTMMC" # Use raw string or double backslashes
+# DATASET_BASE_PATH = "/Volumes/HDD/MTMMC" # Example for macOS/Linux
 SELECTED_SCENE = "s10"
 SELECTED_CAMERAS = ["c09", "c12", "c13", "c16"] # e.g., ["c01", "c02", "c09", "c16"]
 
@@ -117,13 +119,14 @@ class MultiCameraReIDTracker:
         # Load Multiple Detector Instances (RTDETR)
         self.detectors: Dict[str, RTDETR] = {}
         try:
+            dummy_frame_det = np.zeros((640, 640, 3), dtype=np.uint8) # Create dummy frame once
             for cam_id in self.camera_ids:
                 print(f"Loading RTDETR detector for {cam_id} from: {detector_path}")
                 detector_instance = RTDETR(detector_path)
                 detector_instance.to(self.device)
                 # Warmup each detector instance
                 print(f"Warming up detector for {cam_id}...")
-                _ = detector_instance.predict(np.zeros((640, 640, 3), dtype=np.uint8), verbose=False, device=self.device)
+                _ = detector_instance.predict(dummy_frame_det, verbose=False, device=self.device)
                 self.detectors[cam_id] = detector_instance
                 print(f"RTDETR Detector for {cam_id} loaded successfully.")
         except Exception as e:
@@ -134,14 +137,34 @@ class MultiCameraReIDTracker:
         try:
             print(f"Loading SHARED OSNet ReID model from: {reid_weights_path}")
             weights_path_obj = Path(reid_weights_path)
-            self.reid_model_handler = ReidAutoBackend(weights=weights_path_obj, device=self.device)
+
+            # --- Determine device string format specifically for ReidAutoBackend ---
+            reid_device_specifier = 'cpu' # Default to CPU
+            if self.device.type == 'cuda':
+                # ReidAutoBackend expects the index as a string, e.g., '0'
+                cuda_index = self.device.index if self.device.index is not None else 0
+                reid_device_specifier = str(cuda_index)
+                print(f"Using CUDA device index '{reid_device_specifier}' for ReID model.")
+            elif self.device.type == 'mps':
+                # BoxMOT/TorchReID might have limited MPS support. Try 'mps', may need fallback to 'cpu'.
+                reid_device_specifier = 'mps'
+                print(f"Attempting to use MPS device '{reid_device_specifier}' for ReID model (fallback to CPU if problematic).")
+            elif self.device.type == 'cpu':
+                 reid_device_specifier = 'cpu'
+                 print(f"Using CPU device '{reid_device_specifier}' for ReID model.")
+            # --------------------------------------------------------------------
+
+            # Pass the correctly formatted device string to ReidAutoBackend
+            self.reid_model_handler = ReidAutoBackend(weights=weights_path_obj, device=reid_device_specifier)
+
             self.reid_model: BaseModelBackend = self.reid_model_handler.model
             if hasattr(self.reid_model, "warmup"):
                 print("Warming up OSNet ReID model...")
                 self.reid_model.warmup()
             print("OSNet ReID Model loaded successfully.")
         except Exception as e:
-            print(f"FATAL ERROR loading ReID model: {e}")
+            # Provide more context in the error message if it still fails
+            print(f"FATAL ERROR loading ReID model with device specifier '{reid_device_specifier}': {e}")
             sys.exit(1)
 
         # --- State Management (Remains the same) ---
@@ -292,7 +315,7 @@ class MultiCameraReIDTracker:
 
 
     # Modified process_frame_batch to use specific detector instance
-    def process_frame_batch(self, frames: Dict[str, np.ndarray], frame_idx: int) -> Dict[str, Results]:
+    def process_frame_batch(self, frames: Dict[str, Optional[np.ndarray]], frame_idx: int) -> Dict[str, Optional[Results]]:
         """
         Main processing function for a batch of frames from multiple cameras.
         Uses the dedicated detector instance for each camera.
@@ -335,6 +358,8 @@ class MultiCameraReIDTracker:
                  current_detections[cam_id] = None
             detection_time += (time.time() - t_start)
 
+        # print(f"Detection/Tracking time: {detection_time:.4f}s")
+
         # The rest of the logic remains the same, operating on results and external state
         self._update_track_states(current_detections, frame_idx)
         self._determine_reid_needs(frame_idx)
@@ -344,16 +369,29 @@ class MultiCameraReIDTracker:
         return current_detections # Return raw detections if needed
 
     # draw_annotations remains unchanged
-    def draw_annotations(self, frames: Dict[str, np.ndarray]) -> Dict[str, Optional[np.ndarray]]:
+    def draw_annotations(self, frames: Dict[str, Optional[np.ndarray]]) -> Dict[str, Optional[np.ndarray]]:
         """Draws bounding boxes with tracker_id and global_id on frames."""
-        annotated_frames = {}; default_frame_h, default_frame_w = 480, 640
+        annotated_frames = {}; default_frame_h, default_frame_w = 1080, 1920 # Default to typical HD size
+        first_valid_frame_dims_set = False
+
         for cam_id, frame in frames.items():
             if frame is None:
-                placeholder = np.zeros((default_frame_h, default_frame_w, 3), dtype=np.uint8)
-                cv2.putText(placeholder, f"No Frame ({cam_id})", (30, 30), cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 0, 255), 2)
-                annotated_frames[cam_id] = placeholder; continue
+                 # Update default size if not set yet and some frames ARE valid (should have been done by now ideally)
+                 if not first_valid_frame_dims_set:
+                      for f in frames.values():
+                           if f is not None:
+                                default_frame_h, default_frame_w = f.shape[:2]
+                                first_valid_frame_dims_set = True
+                                break
+                 placeholder = np.zeros((default_frame_h, default_frame_w, 3), dtype=np.uint8)
+                 cv2.putText(placeholder, f"No Frame ({cam_id})", (30, 30), cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 0, 255), 2)
+                 annotated_frames[cam_id] = placeholder; continue
+
             current_h, current_w = frame.shape[:2]
-            if default_frame_h == 480 and default_frame_w == 640: default_frame_h, default_frame_w = current_h, current_w
+            if not first_valid_frame_dims_set: # Set default on first valid frame
+                default_frame_h, default_frame_w = current_h, current_w
+                first_valid_frame_dims_set = True
+
             annotated_frame = frame.copy()
             for tracker_id, track in self.track_states.items():
                  if (track is not None and
@@ -385,6 +423,7 @@ if __name__ == "__main__":
     # --- Construct Camera Paths and Validate ---
     camera_base_dirs = {}
     valid_cameras = []
+    # Adjusted path construction for Windows compatibility if needed
     base_scene_path = os.path.join(DATASET_BASE_PATH, "train", "train", SELECTED_SCENE)
 
     if not os.path.isdir(base_scene_path):
@@ -447,11 +486,18 @@ if __name__ == "__main__":
             else: current_frames_bgr[cam_id] = None
         if not valid_frame_loaded: print(f"W: No valid frames loaded for index {frame_idx} ({current_filename}). Stopping."); break
         actual_frames_processed += 1
-        print(f"\n--- Processing Frame Index: {frame_idx} ({current_filename}) ---")
+        # Limit console output frequency
+        if frame_idx % 10 == 0 or frame_idx < 5:
+             print(f"\n--- Processing Frame Index: {frame_idx} ({current_filename}) ---")
+
+        # Process the batch of frames
         processing_start_time = time.time()
         _ = tracker.process_frame_batch(current_frames_bgr, frame_idx)
         processing_end_time = time.time()
-        print(f"Batch processing time: {processing_end_time - processing_start_time:.4f}s")
+        if frame_idx % 10 == 0 or frame_idx < 5:
+             print(f"Batch processing time: {processing_end_time - processing_start_time:.4f}s")
+
+        # Draw annotations
         annotated_frames = tracker.draw_annotations(current_frames_bgr)
 
         # --- Visualization ---
