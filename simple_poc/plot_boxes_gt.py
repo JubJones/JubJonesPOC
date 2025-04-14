@@ -96,6 +96,7 @@ def display_multi_video_with_bboxes(root_dir, scene, cameras):
     Displays videos from multiple cameras simultaneously in a grid,
     assigning a unique persistent color to each object ID when it appears
     in multiple views simultaneously. IDs in single views are green.
+    Shows the current frame ID on the montage.
 
     Args:
         root_dir: The root directory of the MTMMC dataset.
@@ -166,7 +167,7 @@ def display_multi_video_with_bboxes(root_dir, scene, cameras):
     target_h, target_w = None, None
     for fname in sorted_all_found_files:
         for cam in active_cameras:
-             if fname in all_image_files[cam]:
+             if fname in all_image_files.get(cam, set()): # Use .get with default
                  try:
                      first_img_path = os.path.join(camera_base_paths[cam], fname)
                      first_img = cv2.imread(first_img_path)
@@ -188,11 +189,15 @@ def display_multi_video_with_bboxes(root_dir, scene, cameras):
 
 
     COLOR_GREEN = (0, 255, 0) # BGR
+    # --- MODIFICATION: Define Red Color ---
+    COLOR_RED = (0, 0, 255) # BGR
     FONT = cv2.FONT_HERSHEY_SIMPLEX
     FONT_SCALE_INFO = 0.6
     FONT_SCALE_ID = 0.7
     THICKNESS_BOX = 2
     THICKNESS_TEXT = 1
+    # --- MODIFICATION: Define wait time for slower playback ---
+    WAIT_TIME_MS = 50 # Original was 25, doubled for x2 slower speed
 
     print("Starting video display... Press 'q' to quit.")
     frame_count = 0
@@ -231,8 +236,10 @@ def display_multi_video_with_bboxes(root_dir, scene, cameras):
                 else:
                     # Display camera ID and filename
                     text = f"{camera}: {image_file}"
+                    # Add outline for visibility
                     cv2.putText(image, text, (10, 30), FONT, FONT_SCALE_INFO, (0,0,0), THICKNESS_TEXT + 1, cv2.LINE_AA)
                     cv2.putText(image, text, (10, 30), FONT, FONT_SCALE_INFO, (255,255,255), THICKNESS_TEXT, cv2.LINE_AA)
+
 
                     # Draw bounding boxes
                     if camera in all_annotations and frame_id in all_annotations[camera]:
@@ -261,20 +268,37 @@ def display_multi_video_with_bboxes(root_dir, scene, cameras):
                             cv2.putText(image, str(object_id), id_text_pos, FONT, FONT_SCALE_ID, (0,0,0), THICKNESS_TEXT + 1, cv2.LINE_AA) # Outline
                             cv2.putText(image, str(object_id), id_text_pos, FONT, FONT_SCALE_ID, box_color, THICKNESS_TEXT, cv2.LINE_AA) # Text
 
-            frames_to_display.append(image)
+            frames_to_display.append(image) # Appends None if image couldn't be read
 
-        # Create and display the montage
+        # Create the montage
         montage = create_montage(frames_to_display, grid_dims, target_size)
+
+        # --- MODIFICATION: Add Frame ID to Montage (Bigger & Red) ---
+        frame_id_text = f"Frame: {frame_id}"
+        # Position at bottom-left
+        text_x = 15
+        text_y = montage.shape[0] - 20 # Adjusted y slightly higher for larger text
+        # Use larger scale for montage-level info
+        montage_font_scale = 1.2 # Increased font scale
+        montage_text_thickness = 2 # Increased thickness
+        # Add outline for visibility (keep black)
+        cv2.putText(montage, frame_id_text, (text_x, text_y), FONT, montage_font_scale, (0, 0, 0), montage_text_thickness + 1, cv2.LINE_AA)
+        # Add text in RED
+        cv2.putText(montage, frame_id_text, (text_x, text_y), FONT, montage_font_scale, COLOR_RED, montage_text_thickness, cv2.LINE_AA)
+        # --- End Add Frame ID ---
+
+        # Display the montage
         cv2.imshow("Multi-Camera View (Unique Colors for Multi-View IDs)", montage)
 
-        key = cv2.waitKey(25) & 0xFF
+        # --- MODIFICATION: Use defined wait time for speed control ---
+        key = cv2.waitKey(WAIT_TIME_MS) & 0xFF
         if key == ord("q"):
             print("Quitting...")
             break
         elif key == ord('p'):
              print("Paused. Press 'p' again to resume.")
              while True:
-                 key2 = cv2.waitKey(0) & 0xFF
+                 key2 = cv2.waitKey(0) & 0xFF # Wait indefinitely when paused
                  if key2 == ord('p'):
                      print("Resuming...")
                      break
@@ -290,7 +314,8 @@ def display_multi_video_with_bboxes(root_dir, scene, cameras):
 if __name__ == "__main__":
     # --- Configuration ---
     # root_directory = "D:/MTMMC"
-    root_directory = "/Volumes/HDD/MTMMC"
+    # root_directory = "/Volumes/HDD/MTMMC"
+    root_directory = "/Users/krittinsetdhavanich/Documents/MTMMC"
 
     # Campus
     # selected_cameras = ["c01", "c02", "c03", "c15"]
