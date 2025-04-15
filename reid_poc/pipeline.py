@@ -1,4 +1,3 @@
-# reid_poc/pipeline.py
 """Core processing class for the multi-camera detection, tracking, and Re-ID pipeline."""
 
 import logging
@@ -76,6 +75,7 @@ class MultiCameraPipeline:
             logger.info("Handoff Triggering DISABLED (Overlap Ratio <= 0)")
         logger.info(f"Possible Overlaps: {config.possible_overlaps}") # Log original for clarity
         logger.info(f"No Overlaps: {config.no_overlaps}") # Log original for clarity
+        logger.info(f"Lost Track Buffer: {config.lost_track_buffer_frames} frames") # Log new config
 
         # --- State Initialization ---
         self.reid_gallery: Dict[GlobalID, FeatureVector] = {} # Stores representative feature for each GlobalID
@@ -91,6 +91,9 @@ class MultiCameraPipeline:
         self.handoff_triggers_this_frame: List[HandoffTriggerInfo] = []
         # Counts only the frames actively processed by the pipeline (respecting frame skipping)
         self.processed_frame_counter: int = 0
+        # --- NEW: Store info about recently lost tracks ---
+        # Maps GlobalID -> (last_feature_vector, disappearance_frame_number)
+        self.lost_track_gallery: Dict[GlobalID, Tuple[FeatureVector, int]] = {}
 
         # Pre-normalize overlap sets for faster lookup later
         self.possible_overlaps_normalized = normalize_overlap_set(config.possible_overlaps)
@@ -98,7 +101,7 @@ class MultiCameraPipeline:
 
     def _extract_features_for_tracks(self, frame_bgr: FrameData, tracked_dets_np: np.ndarray) -> Dict[TrackID, FeatureVector]:
         """Extracts Re-ID features for the given tracks using the provided frame."""
-        # --- Function remains the same as original ---
+        # --- Function remains the same ---
         features: Dict[TrackID, FeatureVector] = {}
         if self.reid_model is None:
             logger.warning("ReID model not available, cannot extract features.")
@@ -110,8 +113,8 @@ class MultiCameraPipeline:
             return features # No tracks to extract features for
 
         if tracked_dets_np.shape[1] < 5:
-             logger.warning(f"Track data has unexpected shape {tracked_dets_np.shape}, expected at least 5 columns (xyxy, id). Skipping feature extraction.")
-             return features
+            logger.warning(f"Track data has unexpected shape {tracked_dets_np.shape}, expected at least 5 columns (xyxy, id). Skipping feature extraction.")
+            return features
 
         bboxes_xyxy = tracked_dets_np[:, 0:4].astype(np.float32)
         track_ids_float = tracked_dets_np[:, 4]
@@ -129,7 +132,7 @@ class MultiCameraPipeline:
                         track_id = int(track_ids_float[i])
                         features[track_id] = det_feature
             # else:
-                # logger.warning(f"Feature extraction output count mismatch or None.")
+            #     logger.warning(f"Feature extraction output count mismatch or None.")
 
         except Exception as e:
             logger.error(f"Feature extraction call failed: {e}", exc_info=False) # Reduce noise
@@ -146,6 +149,7 @@ class MultiCameraPipeline:
         Checks if any tracks in the current camera trigger predefined handoff rules
         based on quadrant overlap. Appends triggers to self.handoff_triggers_this_frame.
         """
+        # --- Function remains the same ---
         cam_handoff_cfg = self.config.cameras_handoff_config.get(cam_id)
         # Check prerequisites for handoff calculation
         if (not cam_handoff_cfg or
@@ -187,7 +191,7 @@ class MultiCameraPipeline:
 
             # Check each track against this rule
             for track_data in tracked_dets_np:
-                 # Expecting at least [x1, y1, x2, y2, track_id, ...]
+                # Expecting at least [x1, y1, x2, y2, track_id, ...]
                 if len(track_data) < 5: continue
                 try:
                     track_id = int(track_data[4])
@@ -234,6 +238,7 @@ class MultiCameraPipeline:
 
     def _get_relevant_handoff_cams(self, target_cam_id: CameraID) -> Set[CameraID]:
         """Gets the target camera and any possibly overlapping cameras for handoff."""
+        # --- Function remains the same ---
         relevant_cams = {target_cam_id}
         # Check normalized overlap set
         for c1, c2 in self.possible_overlaps_normalized:
@@ -245,30 +250,44 @@ class MultiCameraPipeline:
 
 
     def _perform_reid_association(self, features_per_track: Dict[TrackKey, FeatureVector]) -> Dict[TrackKey, Optional[GlobalID]]:
-        """Associates tracks with Global IDs, prioritizing handoff targets."""
+        """
+        Associates tracks with Global IDs, prioritizing checks against recently lost tracks,
+        then handoff targets, then the full gallery.
+        """
         newly_assigned_global_ids: Dict[TrackKey, Optional[GlobalID]] = {}
         if not features_per_track:
             return newly_assigned_global_ids
 
-        # --- Prepare Full Gallery for Fallback Comparison ---
-        valid_gallery_items = [
+        # --- Prepare Full Main Gallery for Fallback Comparison ---
+        valid_main_gallery_items = [
             (gid, emb) for gid, emb in self.reid_gallery.items()
             if emb is not None and np.isfinite(emb).all() and emb.size > 0
         ]
-        full_gallery_ids: List[GlobalID] = []
-        full_gallery_embeddings: List[FeatureVector] = []
-        if valid_gallery_items:
-            full_gallery_ids, full_gallery_embeddings = zip(*valid_gallery_items)
+        full_main_gallery_ids: List[GlobalID] = []
+        full_main_gallery_embeddings: List[FeatureVector] = []
+        if valid_main_gallery_items:
+            full_main_gallery_ids, full_main_gallery_embeddings = zip(*valid_main_gallery_items)
+
+        # --- Prepare Lost Track Gallery ---
+        valid_lost_gallery_items = [
+            (gid, (emb, frame_num)) for gid, (emb, frame_num) in self.lost_track_gallery.items()
+            if emb is not None and np.isfinite(emb).all() and emb.size > 0
+        ]
+        lost_gallery_ids: List[GlobalID] = []
+        lost_gallery_embeddings: List[FeatureVector] = []
+        if valid_lost_gallery_items:
+            # Sort by disappearance frame number (most recent first) - might help slightly? Optional.
+            # valid_lost_gallery_items.sort(key=lambda item: item[1][1], reverse=True)
+            lost_gallery_ids, lost_gallery_data = zip(*valid_lost_gallery_items)
+            lost_gallery_embeddings = [data[0] for data in lost_gallery_data]
 
 
         # --- Find active handoff triggers for tracks needing ReID ---
-        # Note: self.handoff_triggers_this_frame was calculated *before* feature extraction now
         active_triggers_map: Dict[TrackKey, HandoffTriggerInfo] = {
-             trigger.source_track_key: trigger
-             for trigger in self.handoff_triggers_this_frame
-             if trigger.source_track_key in features_per_track # Only consider triggers for tracks we actually got features for
+            trigger.source_track_key: trigger
+            for trigger in self.handoff_triggers_this_frame
+            if trigger.source_track_key in features_per_track
         }
-
 
         # --- Iterate Through New Features ---
         for track_key, new_embedding_raw in features_per_track.items():
@@ -280,103 +299,116 @@ class MultiCameraPipeline:
                 continue
 
             normalized_new_embedding = normalize_embedding(new_embedding_raw)
+            assigned_global_id: Optional[GlobalID] = None # Track the final assignment for this track_key
 
-            best_match_global_id: Optional[GlobalID] = None
-            max_similarity = -1.0
+            # --- Step 1: Check Lost Track Gallery First ---
+            best_lost_match_gid: Optional[GlobalID] = None
+            max_lost_similarity = -1.0
 
-            # --- Check for Handoff Trigger ---
-            triggered_handoff = active_triggers_map.get(track_key)
-            gallery_ids_to_check = full_gallery_ids
-            gallery_embeddings_to_check = full_gallery_embeddings
-
-            if triggered_handoff:
-                target_cam_id = triggered_handoff.rule.target_cam_id
-                relevant_cams = self._get_relevant_handoff_cams(target_cam_id)
-                logger.debug(f"Track {track_key} triggered handoff. Prioritizing check against cams: {relevant_cams}")
-
-                # Filter gallery based on relevant cameras
-                filtered_gallery_indices = [
-                    idx for idx, gid in enumerate(full_gallery_ids)
-                    if self.global_id_last_seen_cam.get(gid) in relevant_cams
-                ]
-
-                if filtered_gallery_indices:
-                    gallery_ids_to_check = [full_gallery_ids[i] for i in filtered_gallery_indices]
-                    gallery_embeddings_to_check = [full_gallery_embeddings[i] for i in filtered_gallery_indices]
-                    logger.debug(f"  -> Checking against {len(gallery_ids_to_check)} filtered gallery entries.")
-                else:
-                    # If no relevant entries, fallback to full gallery check is needed later
-                    logger.debug(f"  -> No relevant gallery entries found for cams {relevant_cams}. Will check full gallery.")
-                    gallery_ids_to_check = [] # Prevent comparison in the next block for now
-
-            # --- Compare with Selected Gallery (Filtered or Full) ---
-            if gallery_ids_to_check: # Only compare if we have candidates
+            if lost_gallery_ids: # Only check if the lost gallery is not empty
                 try:
-                    similarities = np.array([
-                        calculate_cosine_similarity(normalized_new_embedding, gal_emb)
-                        for gal_emb in gallery_embeddings_to_check
+                    lost_similarities = np.array([
+                        calculate_cosine_similarity(normalized_new_embedding, lost_emb)
+                        for lost_emb in lost_gallery_embeddings
                     ])
+                    if lost_similarities.size > 0:
+                        max_lost_similarity_idx = np.argmax(lost_similarities)
+                        current_max_lost_similarity = lost_similarities[max_lost_similarity_idx]
 
-                    if similarities.size > 0:
-                        max_similarity_idx = np.argmax(similarities)
-                        current_max_similarity = similarities[max_similarity_idx]
+                        if current_max_lost_similarity >= self.config.reid_similarity_threshold:
+                            best_lost_match_gid = lost_gallery_ids[max_lost_similarity_idx]
+                            max_lost_similarity = current_max_lost_similarity
+                            logger.info(f"Re-associating {track_key} with LOST GID {best_lost_match_gid} (Sim: {max_lost_similarity:.3f}).")
 
-                        if current_max_similarity >= self.config.reid_similarity_threshold:
-                            # Found a match within the (potentially filtered) set
-                            best_match_global_id = gallery_ids_to_check[max_similarity_idx]
-                            max_similarity = current_max_similarity
-                            logger.debug(f"  -> Match found in {'filtered' if triggered_handoff else 'full'} gallery: GID {best_match_global_id} (Sim: {max_similarity:.3f})")
+                            # Assign the matched Global ID
+                            assigned_global_id = best_lost_match_gid
 
-                except Exception as sim_err:
-                    logger.error(f"Similarity calculation error during ReID for {track_key}: {sim_err}", exc_info=False)
+                            # Restore to main gallery (and remove from lost)
+                            lost_embedding, _ = self.lost_track_gallery.pop(assigned_global_id) # Remove and get data
+                            # Update main gallery using EMA with the new embedding
+                            updated_embedding = (
+                                self.config.gallery_ema_alpha * lost_embedding + # Use the stored lost embedding
+                                (1.0 - self.config.gallery_ema_alpha) * normalized_new_embedding
+                            )
+                            self.reid_gallery[assigned_global_id] = normalize_embedding(updated_embedding)
 
-
-            # --- Fallback: If handoff was triggered but no match found in filtered set, check full gallery ---
-            if triggered_handoff and best_match_global_id is None and full_gallery_ids:
-                 logger.debug(f"  -> Handoff triggered, but no match in filtered set. Checking full gallery...")
-                 try:
-                     similarities_full = np.array([
-                         calculate_cosine_similarity(normalized_new_embedding, gal_emb)
-                         for gal_emb in full_gallery_embeddings # Compare against ALL valid embeddings
-                     ])
-                     if similarities_full.size > 0:
-                         max_similarity_idx_full = np.argmax(similarities_full)
-                         current_max_similarity_full = similarities_full[max_similarity_idx_full]
-
-                         if current_max_similarity_full >= self.config.reid_similarity_threshold:
-                             best_match_global_id = full_gallery_ids[max_similarity_idx_full]
-                             max_similarity = current_max_similarity_full
-                             logger.debug(f"  -> Match found in FULL gallery fallback: GID {best_match_global_id} (Sim: {max_similarity:.3f})")
-
-                 except Exception as sim_err_full:
-                     logger.error(f"Similarity calculation error during FULL ReID fallback for {track_key}: {sim_err_full}", exc_info=False)
+                except Exception as lost_sim_err:
+                    logger.error(f"Similarity calculation error during Lost Gallery check for {track_key}: {lost_sim_err}", exc_info=False)
 
 
-            # --- Assign Global ID and Update Gallery ---
-            assigned_global_id: Optional[GlobalID] = None
+            # --- Step 2: Check Main Gallery (if not re-associated from lost tracks) ---
+            if assigned_global_id is None:
+                best_main_match_global_id: Optional[GlobalID] = None
+                max_main_similarity = -1.0
+                triggered_handoff = active_triggers_map.get(track_key)
 
-            if best_match_global_id is not None:
-                # Case A: Found a match above threshold (either filtered or full)
-                assigned_global_id = best_match_global_id
-                current_gallery_emb = self.reid_gallery.get(assigned_global_id)
+                # Determine which part of the main gallery to check (potentially filtered by handoff)
+                gallery_ids_to_check = full_main_gallery_ids
+                gallery_embeddings_to_check = full_main_gallery_embeddings
+                is_checking_filtered_gallery = False
 
-                if current_gallery_emb is not None:
-                    updated_embedding = (
-                        self.config.gallery_ema_alpha * current_gallery_emb +
-                        (1.0 - self.config.gallery_ema_alpha) * normalized_new_embedding # Use the normalized one
-                    )
-                    self.reid_gallery[assigned_global_id] = normalize_embedding(updated_embedding)
-                else:
-                    logger.warning(f"Track {track_key}: Matched GID {assigned_global_id} was None in gallery? Overwriting.")
-                    self.reid_gallery[assigned_global_id] = normalized_new_embedding
+                if triggered_handoff:
+                    target_cam_id = triggered_handoff.rule.target_cam_id
+                    relevant_cams = self._get_relevant_handoff_cams(target_cam_id)
+                    logger.debug(f"Track {track_key} triggered handoff. Prioritizing check against main gallery entries from cams: {relevant_cams}")
 
-            else:
-                # Case B: No match found above threshold even after potential fallback
-                last_known_global_id = self.track_to_global_id.get(track_key)
+                    filtered_gallery_indices = [
+                        idx for idx, gid in enumerate(full_main_gallery_ids)
+                        if self.global_id_last_seen_cam.get(gid) in relevant_cams
+                    ]
 
-                if last_known_global_id is not None and last_known_global_id in self.reid_gallery:
-                    # Case B.1: Re-assign previous ID and update gallery
-                    assigned_global_id = last_known_global_id
+                    if filtered_gallery_indices:
+                        gallery_ids_to_check = [full_main_gallery_ids[i] for i in filtered_gallery_indices]
+                        gallery_embeddings_to_check = [full_main_gallery_embeddings[i] for i in filtered_gallery_indices]
+                        logger.debug(f"  -> Checking against {len(gallery_ids_to_check)} filtered main gallery entries.")
+                        is_checking_filtered_gallery = True
+                    else:
+                        logger.debug(f"  -> No relevant main gallery entries found for cams {relevant_cams}. Will check full main gallery.")
+                        gallery_ids_to_check = [] # Prevent comparison in the next block for now
+
+                # Perform comparison with selected main gallery (filtered or full)
+                if gallery_ids_to_check:
+                    try:
+                        main_similarities = np.array([
+                            calculate_cosine_similarity(normalized_new_embedding, gal_emb)
+                            for gal_emb in gallery_embeddings_to_check
+                        ])
+                        if main_similarities.size > 0:
+                            max_main_similarity_idx = np.argmax(main_similarities)
+                            current_max_main_similarity = main_similarities[max_main_similarity_idx]
+
+                            if current_max_main_similarity >= self.config.reid_similarity_threshold:
+                                best_main_match_global_id = gallery_ids_to_check[max_main_similarity_idx]
+                                max_main_similarity = current_max_main_similarity
+                                logger.debug(f"  -> Match found in {'filtered' if is_checking_filtered_gallery else 'full'} main gallery: GID {best_main_match_global_id} (Sim: {max_main_similarity:.3f})")
+                    except Exception as sim_err:
+                        logger.error(f"Similarity calculation error during Main Gallery check for {track_key}: {sim_err}", exc_info=False)
+
+
+                # Fallback: If handoff was triggered but no match found in filtered set, check full main gallery
+                if triggered_handoff and is_checking_filtered_gallery and best_main_match_global_id is None and full_main_gallery_ids:
+                    logger.debug(f"  -> Handoff triggered, but no match in filtered main set. Checking full main gallery...")
+                    try:
+                        similarities_full = np.array([
+                            calculate_cosine_similarity(normalized_new_embedding, gal_emb)
+                            for gal_emb in full_main_gallery_embeddings
+                        ])
+                        if similarities_full.size > 0:
+                            max_similarity_idx_full = np.argmax(similarities_full)
+                            current_max_similarity_full = similarities_full[max_similarity_idx_full]
+
+                            if current_max_similarity_full >= self.config.reid_similarity_threshold:
+                                best_main_match_global_id = full_main_gallery_ids[max_similarity_idx_full]
+                                max_main_similarity = current_max_similarity_full
+                                logger.debug(f"  -> Match found in FULL main gallery fallback: GID {best_main_match_global_id} (Sim: {max_main_similarity:.3f})")
+                    except Exception as sim_err_full:
+                         logger.error(f"Similarity calculation error during FULL main gallery fallback for {track_key}: {sim_err_full}", exc_info=False)
+
+
+                # Assign ID if a match was found in the main gallery
+                if best_main_match_global_id is not None:
+                    assigned_global_id = best_main_match_global_id
+                    # Update the main gallery embedding using EMA
                     current_gallery_emb = self.reid_gallery.get(assigned_global_id)
                     if current_gallery_emb is not None:
                         updated_embedding = (
@@ -384,17 +416,20 @@ class MultiCameraPipeline:
                             (1.0 - self.config.gallery_ema_alpha) * normalized_new_embedding
                         )
                         self.reid_gallery[assigned_global_id] = normalize_embedding(updated_embedding)
-                    else:
-                        self.reid_gallery[assigned_global_id] = normalized_new_embedding # Overwrite if missing
-                else:
-                    # Case B.2: Assign a new Global ID
-                    assigned_global_id = self.next_global_id
-                    self.next_global_id += 1
-                    self.reid_gallery[assigned_global_id] = normalized_new_embedding
-                    logger.info(f"Assigned NEW Global ID {assigned_global_id} to {track_key}")
+                    else: # Should not happen if gallery lists were built correctly, but safeguard
+                         logger.warning(f"Track {track_key}: Matched main GID {assigned_global_id} was None in gallery? Overwriting.")
+                         self.reid_gallery[assigned_global_id] = normalized_new_embedding
 
 
-            # --- Update State Mappings ---
+            # --- Step 3: Assign New Global ID (if not matched in Lost or Main gallery) ---
+            if assigned_global_id is None:
+                assigned_global_id = self.next_global_id
+                self.next_global_id += 1
+                self.reid_gallery[assigned_global_id] = normalized_new_embedding # Add the new embedding
+                logger.info(f"Assigned NEW Global ID {assigned_global_id} to {track_key}")
+
+
+            # --- Step 4: Update State Mappings ---
             if assigned_global_id is not None:
                 newly_assigned_global_ids[track_key] = assigned_global_id
                 self.track_to_global_id[track_key] = assigned_global_id
@@ -405,36 +440,71 @@ class MultiCameraPipeline:
 
 
     def _update_and_cleanup_state(self, current_frame_active_track_keys: Set[TrackKey]):
-        """Updates the set of last seen tracks and cleans up state for disappeared tracks."""
-        # 1. Update last_seen_track_ids (based on tracks active *this* processed frame)
+        """
+        Updates the set of last seen tracks. Moves disappeared tracks' info to a temporary
+        'lost_track_gallery' and purges expired entries from it. Cleans up other state.
+        """
+        # --- 1. Determine Disappeared Tracks ---
+        all_previous_track_keys = set(self.track_to_global_id.keys())
+        disappeared_track_keys = all_previous_track_keys - current_frame_active_track_keys
+
+        # --- 2. Move Disappeared Tracks to Lost Gallery ---
+        for track_key in disappeared_track_keys:
+            global_id = self.track_to_global_id.pop(track_key, None) # Remove and get GID
+            if global_id is not None:
+                last_feature = self.reid_gallery.get(global_id)
+                if last_feature is not None:
+                    # Store the last known feature and the frame number it disappeared
+                    self.lost_track_gallery[global_id] = (last_feature, self.processed_frame_counter)
+                    logger.info(f"Track {track_key} (GID {global_id}) disappeared. Moved info to lost gallery (frame {self.processed_frame_counter}).")
+                    # Optional: Remove from main gallery immediately? Or keep for a while?
+                    # Let's keep it in the main gallery for now, in case it reappears instantly elsewhere
+                    # before the lost check happens (e.g., handoff). The lost check will prioritize.
+                else:
+                     logger.warning(f"Track {track_key} (GID {global_id}) disappeared but feature not found in main gallery.")
+            # Clean up last reid frame entry as well
+            if track_key in self.track_last_reid_frame:
+                 del self.track_last_reid_frame[track_key]
+
+
+        # --- 3. Purge Expired Entries from Lost Gallery ---
+        expired_lost_gids = [
+            gid for gid, (feat, frame_num) in self.lost_track_gallery.items()
+            if (self.processed_frame_counter - frame_num) > self.config.lost_track_buffer_frames
+        ]
+        for gid in expired_lost_gids:
+            del self.lost_track_gallery[gid]
+            # Optionally remove from main gallery now if it hasn't been updated
+            # This requires tracking last *update* time for main gallery entries, adding complexity.
+            # For simplicity, let's just remove from lost gallery for now. It might linger in main gallery.
+            logger.info(f"Purged expired GID {gid} from lost track gallery.")
+
+
+        # --- 4. Update last_seen_track_ids for the next cycle ---
+        # (Based on tracks active *this* processed frame)
         new_last_seen: Dict[CameraID, Set[TrackID]] = defaultdict(set)
         for cam_id, track_id in current_frame_active_track_keys:
             new_last_seen[cam_id].add(track_id)
-        self.last_seen_track_ids = new_last_seen # Store for the *next* cycle's 'is_newly_seen' check
+        self.last_seen_track_ids = new_last_seen
 
-        # 2. Clean up track_last_reid_frame
-        keys_to_delete_reid = set(self.track_last_reid_frame.keys()) - current_frame_active_track_keys
+        # --- 5. Clean up track_last_reid_frame for tracks that *are* active but maybe weren't in the map before ---
+        # This ensures only currently active tracks persist in this map.
+        # (The disappeared ones were handled in step 2)
+        current_reid_keys = set(self.track_last_reid_frame.keys())
+        keys_to_delete_reid = current_reid_keys - current_frame_active_track_keys
         for key in keys_to_delete_reid:
-            if key in self.track_last_reid_frame: # Ensure key exists before deleting
+             # Check again in case it was already deleted in step 2 (shouldn't hurt)
+            if key in self.track_last_reid_frame:
                 del self.track_last_reid_frame[key]
-                logger.debug(f"Cleaned up track_last_reid_frame for disappeared track {key}")
+                # logger.debug(f"Cleaned up lingering track_last_reid_frame for {key}")
 
 
-        # 3. Clean up track_to_global_id mapping
-        keys_to_delete_global = set(self.track_to_global_id.keys()) - current_frame_active_track_keys
-        for key in keys_to_delete_global:
-             if key in self.track_to_global_id: # Ensure key exists
-                 del self.track_to_global_id[key]
-                 logger.debug(f"Cleaned up track_to_global_id for disappeared track {key}")
-
-        # 4. Optional: Cleanup global_id_last_seen_cam for GIDs not seen recently?
-        #    For simplicity, we don't do this now. It might remove relevant history for handoffs.
-
-        # 5. Cleanup handoff triggers from the *previous* frame (done at start of next process call)
+        # 6. Cleanup handoff triggers from the *previous* frame (done at start of next process call)
+        # - This remains unchanged, handled by self.handoff_triggers_this_frame.clear()
 
 
     def process_frame_batch_full(self, frames: Dict[CameraID, FrameData], frame_idx_global: int) -> ProcessedBatchResult:
-        """Processes a batch of frames: Detect -> Track -> Handoff Check -> Re-ID -> Associate."""
+        """Processes a batch of frames: Detect -> Track -> Handoff Check -> Re-ID (Lost Check -> Main Check -> New ID) -> Associate."""
         t_start_batch = time.time()
         timings: Timings = defaultdict(float)
         final_results_per_camera: Dict[CameraID, List[TrackData]] = defaultdict(list)
@@ -444,6 +514,7 @@ class MultiCameraPipeline:
         proc_frame_id = self.processed_frame_counter # Local alias for clarity
 
         # --- Stage 1a: Preprocess Frames for Detection ---
+        # --- Remains the same ---
         t_prep_start = time.time()
         batch_input_tensors: List[torch.Tensor] = []
         batch_cam_ids: List[CameraID] = [] # Keep track of order
@@ -486,6 +557,7 @@ class MultiCameraPipeline:
         timings['preprocess'] = time.time() - t_prep_start
 
         # --- Stage 1b: Batched Detection ---
+        # --- Remains the same ---
         t_detect_start = time.time()
         all_predictions: List[Dict[str, torch.Tensor]] = []
         if batch_input_tensors:
@@ -500,6 +572,7 @@ class MultiCameraPipeline:
         timings['detection_batched'] = time.time() - t_detect_start
 
         # --- Stage 1c: Postprocess Detections (Filter, Scale) ---
+        # --- Remains the same ---
         t_postproc_start = time.time()
         detections_per_camera: Dict[CameraID, List[Detection]] = defaultdict(list)
         if len(all_predictions) == len(batch_cam_ids):
@@ -533,15 +606,13 @@ class MultiCameraPipeline:
 
 
         # --- Stage 1d: Tracking per Camera ---
+        # --- Remains the same ---
         t_track_start = time.time()
-        # Store tracker outputs per camera for this frame
         current_frame_tracker_outputs: Dict[CameraID, np.ndarray] = {}
-        # Store original shapes mapped by cam_id needed for tracker and handoff check
         original_shapes_map: Dict[CameraID, Tuple[int, int]] = {
             cam_id: shape for cam_id, shape in zip(batch_cam_ids, batch_original_shapes)
         }
 
-        # --- Run Tracking for all cameras first ---
         for cam_id in self.camera_ids: # Iterate all configured cameras
             tracker = self.trackers.get(cam_id)
             if not tracker:
@@ -566,11 +637,11 @@ class MultiCameraPipeline:
             try:
                 tracked_dets_list = tracker.update(np_dets, dummy_frame)
                 if tracked_dets_list is not None and len(tracked_dets_list) > 0:
-                     tracked_dets_np_maybe = np.array(tracked_dets_list)
-                     if tracked_dets_np_maybe.ndim == 2 and tracked_dets_np_maybe.shape[1] >= 7: # BoxMOT usually gives xyxy, id, conf, cls, [index]
-                         tracked_dets_np = tracked_dets_np_maybe[:, :8] # Take first 8 columns if more exist
-                     else:
-                         logger.warning(f"[{cam_id}] Tracker output has unexpected shape {tracked_dets_np_maybe.shape}. Treating as empty.")
+                    tracked_dets_np_maybe = np.array(tracked_dets_list)
+                    if tracked_dets_np_maybe.ndim == 2 and tracked_dets_np_maybe.shape[1] >= 7: # BoxMOT usually gives xyxy, id, conf, cls, [index]
+                        tracked_dets_np = tracked_dets_np_maybe[:, :8] # Take first 8 columns if more exist
+                    else:
+                        logger.warning(f"[{cam_id}] Tracker output has unexpected shape {tracked_dets_np_maybe.shape}. Treating as empty.")
             except Exception as e:
                 logger.error(f"[{cam_id}] Tracker update failed: {e}", exc_info=True) # Log full trace for tracker errors
 
@@ -579,121 +650,98 @@ class MultiCameraPipeline:
         timings['tracking'] = time.time() - t_track_start
 
 
-        # --- Stage 1e: Handoff Trigger Check (Moved Earlier) ---
+        # --- Stage 1e: Handoff Trigger Check ---
+        # --- Remains the same ---
         t_handoff_start = time.time()
         self.handoff_triggers_this_frame.clear() # Clear triggers from previous batch first
         if self.config.min_bbox_overlap_ratio_in_quadrant > 0:
             for cam_id, tracked_dets_np in current_frame_tracker_outputs.items():
                 frame_shape_orig = original_shapes_map.get(cam_id)
-                # This populates self.handoff_triggers_this_frame based on quadrant overlap rules
                 self._check_handoff_triggers(cam_id, tracked_dets_np, frame_shape_orig)
 
-        # Create a set of track keys that triggered a handoff rule *this frame*
         track_keys_triggering_handoff: Set[TrackKey] = {
-             trigger.source_track_key for trigger in self.handoff_triggers_this_frame
+            trigger.source_track_key for trigger in self.handoff_triggers_this_frame
         }
         timings['handoff_check'] = time.time() - t_handoff_start
 
 
-        # --- NEW Stage: Decide which tracks need Re-ID Features (includes Handoff Condition) ---
+        # --- Stage: Decide which tracks need Re-ID Features ---
+        # --- Logic remains the same (still based on newly seen, refresh interval, or handoff trigger) ---
         t_reid_decision_start = time.time()
-        # Stores track_key -> track_data for tracks needing feature extraction
         tracks_to_extract_features_for: Dict[TrackKey, np.ndarray] = {}
-        # Keep track of *all* active track keys seen in this processed frame for state cleanup later
         current_frame_active_track_keys: Set[TrackKey] = set()
 
         for cam_id, tracked_dets_np in current_frame_tracker_outputs.items():
             if tracked_dets_np.shape[0] > 0:
-                 original_frame_bgr = frames.get(cam_id) # Get frame needed for condition check
-                 # Need previous IDs to check if track is new this cycle
-                 previous_processed_cam_track_ids = self.last_seen_track_ids.get(cam_id, set())
+                original_frame_bgr = frames.get(cam_id)
+                previous_processed_cam_track_ids = self.last_seen_track_ids.get(cam_id, set())
 
-                 for track_data in tracked_dets_np:
-                     if len(track_data) < 5: continue # Need at least xyxy, id
-                     try:
-                         track_id = int(track_data[4])
-                     except (ValueError, IndexError):
-                         logger.warning(f"[{cam_id}] Invalid track ID format in track_data: {track_data}")
-                         continue
+                for track_data in tracked_dets_np:
+                    if len(track_data) < 5: continue
+                    try:
+                        track_id = int(track_data[4])
+                    except (ValueError, IndexError):
+                        logger.warning(f"[{cam_id}] Invalid track ID format in track_data: {track_data}")
+                        continue
 
-                     current_track_key: TrackKey = (cam_id, track_id)
-                     # Add ALL active tracks seen this frame to the set for cleanup later
-                     current_frame_active_track_keys.add(current_track_key)
+                    current_track_key: TrackKey = (cam_id, track_id)
+                    current_frame_active_track_keys.add(current_track_key) # Collect ALL active keys
 
-                     # --- Determine if Re-ID is needed for this track ---
-                     # Prerequisite: Can we extract features? (Original frame must be valid)
-                     if original_frame_bgr is not None and original_frame_bgr.size > 0:
-
-                        # Condition 1 & 2 (Implicit): Is the track new since last processed frame?
+                    if original_frame_bgr is not None and original_frame_bgr.size > 0:
                         is_newly_seen = track_id not in previous_processed_cam_track_ids
-
-                        # Condition 4: Is the track due for a periodic refresh?
                         last_reid_attempt_proc_idx = self.track_last_reid_frame.get(
                             current_track_key, -self.config.reid_refresh_interval_frames - 1
                         )
                         is_due_for_refresh = (proc_frame_id - last_reid_attempt_proc_idx) >= self.config.reid_refresh_interval_frames
-
-                        # MODIFIED Condition 3: Did this track just trigger a handoff rule?
                         is_triggering_handoff_now = current_track_key in track_keys_triggering_handoff
 
-                        # Combine conditions: Trigger ReID if new OR refresh OR triggering handoff
+                        # Trigger ReID if new OR refresh OR triggering handoff
                         trigger_reid = is_newly_seen or is_due_for_refresh or is_triggering_handoff_now
 
                         if trigger_reid:
-                            # Add to the dictionary for feature extraction
                             tracks_to_extract_features_for[current_track_key] = track_data
-                            # Record that we are *attempting* ReID in this processed frame
-                            self.track_last_reid_frame[current_track_key] = proc_frame_id
-                            if is_triggering_handoff_now:
-                                logger.debug(f"ReID triggered for {current_track_key} due to Handoff Rule Activation.")
-                            elif is_newly_seen:
-                                logger.debug(f"ReID triggered for {current_track_key} as Newly Seen.")
-                            elif is_due_for_refresh:
-                                logger.debug(f"ReID triggered for {current_track_key} due to Refresh Interval.")
-
+                            self.track_last_reid_frame[current_track_key] = proc_frame_id # Record *attempt*
+                            # Logging remains the same
+                            if is_triggering_handoff_now: logger.debug(f"ReID triggered for {current_track_key} due to Handoff Rule.")
+                            elif is_newly_seen: logger.debug(f"ReID triggered for {current_track_key} as Newly Seen.")
+                            elif is_due_for_refresh: logger.debug(f"ReID triggered for {current_track_key} due to Refresh Interval.")
 
         timings['reid_decision'] = time.time() - t_reid_decision_start
-        # --- End of NEW Stage ---
 
 
         # --- Stage 2: Conditional Feature Extraction ---
+        # --- Remains the same ---
         t_feat_start = time.time()
         extracted_features_this_frame: Dict[TrackKey, FeatureVector] = {}
         if tracks_to_extract_features_for:
-            # Group tracks by camera ID for efficient feature extraction call per camera
             tracks_grouped_by_cam: Dict[CameraID, List[np.ndarray]] = defaultdict(list)
-            track_keys_per_cam: Dict[CameraID, List[TrackKey]] = defaultdict(list) # Store keys to map back
+            track_keys_per_cam: Dict[CameraID, List[TrackKey]] = defaultdict(list)
 
             for track_key, track_data in tracks_to_extract_features_for.items():
-                 cam_id, _ = track_key
-                 tracks_grouped_by_cam[cam_id].append(track_data)
-                 track_keys_per_cam[cam_id].append(track_key) # Store the key associated with this track_data
+                cam_id, _ = track_key
+                tracks_grouped_by_cam[cam_id].append(track_data)
+                track_keys_per_cam[cam_id].append(track_key)
 
             for cam_id, tracks_data_list in tracks_grouped_by_cam.items():
                 frame_bgr = frames.get(cam_id)
                 if frame_bgr is not None and frame_bgr.size > 0 and tracks_data_list:
                     try:
-                        # Convert list of track data arrays into a single numpy array for batch processing
                         tracks_data_np = np.array(tracks_data_list)
-                        # Extract features for this camera's batch
                         features_this_cam: Dict[TrackID, FeatureVector] = self._extract_features_for_tracks(frame_bgr, tracks_data_np)
 
-                        # Map the extracted features back to the correct original TrackKey
                         original_keys_for_this_cam = track_keys_per_cam[cam_id]
                         if len(features_this_cam) > 0 and len(original_keys_for_this_cam) == tracks_data_np.shape[0]:
-                           track_ids_in_batch = tracks_data_np[:, 4].astype(int) # Get track IDs from the batch
-                           for i, track_id_in_batch in enumerate(track_ids_in_batch):
-                               feature = features_this_cam.get(track_id_in_batch)
-                               if feature is not None:
-                                   # Find the original TrackKey corresponding to this index/track_id
-                                   # This assumes the order is preserved, which should be the case
-                                   original_key = original_keys_for_this_cam[i]
-                                   if original_key[1] == track_id_in_batch: # Sanity check
-                                      extracted_features_this_frame[original_key] = feature
-                                   else:
-                                       logger.warning(f"[{cam_id}] Mismatch mapping features back to TrackKey. Expected {original_key}, got T:{track_id_in_batch}")
+                            track_ids_in_batch = tracks_data_np[:, 4].astype(int)
+                            for i, track_id_in_batch in enumerate(track_ids_in_batch):
+                                feature = features_this_cam.get(track_id_in_batch)
+                                if feature is not None:
+                                    original_key = original_keys_for_this_cam[i]
+                                    if original_key[1] == track_id_in_batch: # Sanity check
+                                        extracted_features_this_frame[original_key] = feature
+                                    else:
+                                        logger.warning(f"[{cam_id}] Mismatch mapping features back to TrackKey. Expected {original_key}, got T:{track_id_in_batch}")
                         elif len(features_this_cam) > 0:
-                            logger.warning(f"[{cam_id}] Feature count ({len(features_this_cam)}) or key count ({len(original_keys_for_this_cam)}) mismatch with track data batch size ({tracks_data_np.shape[0]}). Feature mapping might be incomplete.")
+                             logger.warning(f"[{cam_id}] Feature count ({len(features_this_cam)}) or key count ({len(original_keys_for_this_cam)}) mismatch with track data batch size ({tracks_data_np.shape[0]}). Feature mapping might be incomplete.")
 
                     except Exception as fe_err:
                         logger.error(f"[{cam_id}] Error during batched feature extraction call: {fe_err}", exc_info=False)
@@ -701,14 +749,14 @@ class MultiCameraPipeline:
         timings['feature_ext'] = time.time() - t_feat_start
 
 
-        # --- Stage 3: Re-ID Association (Handoff-Aware - logic remains the same) ---
+        # --- Stage 3: Re-ID Association (Uses MODIFIED _perform_reid_association) ---
         t_reid_start = time.time()
         assigned_global_ids_this_cycle = self._perform_reid_association(extracted_features_this_frame)
         timings['reid'] = time.time() - t_reid_start
 
 
         # --- Stage 4: Combine Results and Finalize Track Data ---
-        # Iterate through the tracker outputs again to build the final result structure
+        # --- Logic remains the same (uses output from modified association) ---
         for cam_id, tracked_dets_np in current_frame_tracker_outputs.items():
             if tracked_dets_np.shape[0] > 0:
                 for track_data in tracked_dets_np:
@@ -726,7 +774,7 @@ class MultiCameraPipeline:
                                 global_id = assigned_global_ids_this_cycle[current_track_key]
                             else:
                                 # Fallback: Use last known mapping if ReID wasn't run/successful this cycle
-                                global_id = self.track_to_global_id.get(current_track_key)
+                                global_id = self.track_to_global_id.get(current_track_key) # Will be None if it just appeared and ReID failed
 
                             final_results_per_camera[cam_id].append({
                                 'bbox_xyxy': np.array([x1, y1, x2, y2], dtype=np.float32),
@@ -737,8 +785,8 @@ class MultiCameraPipeline:
                             logger.warning(f"[{cam_id}] Failed to parse final track data from {track_data}: {e}", exc_info=False)
 
 
-        # --- Stage 5: Update State and Cleanup ---
-        # Uses current_frame_active_track_keys which was populated in the Re-ID decision stage
+        # --- Stage 5: Update State and Cleanup (Uses MODIFIED _update_and_cleanup_state) ---
+        # Uses current_frame_active_track_keys collected earlier
         self._update_and_cleanup_state(current_frame_active_track_keys)
 
         # --- Final Timing ---

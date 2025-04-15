@@ -44,6 +44,7 @@ class PipelineConfig:
     reid_similarity_threshold: float = 0.65
     gallery_ema_alpha: float = 0.9 # Exponential Moving Average for gallery updates
     reid_refresh_interval_frames: int = 10 # Processed frames between ReID updates for a track
+    lost_track_buffer_frames: int = 200
 
     # --- Performance ---
     detection_input_width: Optional[int] = 640 # Resize detection input width, None to disable
