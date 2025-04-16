@@ -11,6 +11,7 @@ from typing import List, Optional, Dict, Tuple, Set
 import torch
 import cv2 # Needed for frame shape detection during setup
 import numpy as np # Needed for homography matrix type hint
+from datetime import datetime, timezone # For timestamping
 
 # Attempt to locate boxmot path for default config lookup
 try:
@@ -89,6 +90,12 @@ class PipelineConfig:
     # --- ADJUST THESE VALUES ---
     bev_map_world_scale: float = 0.5  # Pixels per unit in the world map coordinates (Adjusted based on logs)
     bev_map_world_origin_offset_px: Tuple[int, int] = (25, 50)  # (X, Y) offset in pixels (Adjusted)
+
+    # --- Output Configuration --- ADDED
+    save_predictions: bool = True # Enable/disable saving predictions JSON
+    output_predictions_dir: Path = Path("predictions") # Directory to save JSON files
+    save_bev_maps: bool = True # Enable/disable saving BEV map images
+    output_bev_maps_dir: Path = Path("bev_maps") # Directory to save BEV map PNG files
 
     # >>> SET THIS TO TRUE TO ENABLE DEBUG LOGS <<<
     enable_debug_logging: bool = True # If True, would set logger level to DEBUG
@@ -288,15 +295,16 @@ def setup_paths_and_config() -> PipelineConfig:
     # --- Load Homography Matrices ---
     logger.info("Loading Homography Matrices...")
     loaded_homographies: Dict[CameraID, np.ndarray] = {}
-    homography_points_dir = script_dir # Assume .npz files are in the same dir as this script
+    # Look for .npz files in the same dir as this script (reid_poc/)
+    homography_points_dir = Path(__file__).parent
     for cam_id in config.selected_cameras:
-        logger.debug(f"-> Loading homography for camera: {cam_id}") # DEBUG Log camera ID
+        logger.debug(f"-> Loading homography for camera: {cam_id} from dir: {homography_points_dir}") # DEBUG Log camera ID and dir
         h_matrix = load_homography_matrix(cam_id, config.selected_scene, homography_points_dir)
         if h_matrix is not None:
             loaded_homographies[cam_id] = h_matrix
             logger.debug(f"-> Successfully loaded homography for {cam_id}.") # DEBUG Log success
         else:
-            logger.warning(f"Could not load homography matrix for camera {cam_id}. BEV plotting will be disabled for this camera.")
+            logger.warning(f"Could not load homography matrix for camera {cam_id}. BEV plotting/projection will be disabled for this camera.")
             # If BEV map is essential, you might want to raise an error instead:
             # raise RuntimeError(f"Failed to load essential homography matrix for camera {cam_id}")
     config.homography_matrices = loaded_homographies
@@ -349,6 +357,7 @@ def setup_paths_and_config() -> PipelineConfig:
         if BOXMOT_PATH and (BOXMOT_PATH / config.reid_model_weights.name).is_file():
              potential_reid_paths.append(BOXMOT_PATH / config.reid_model_weights.name)
 
+        # Check path provided directly
         potential_reid_paths.append(config.reid_model_weights)
 
         found_reid_path = next((p for p in potential_reid_paths if p.is_file()), None)
@@ -364,12 +373,53 @@ def setup_paths_and_config() -> PipelineConfig:
     if config.bev_map_background_path:
         logger.debug(f"Checking BEV background path: {config.bev_map_background_path}") # DEBUG Log path
         if not config.bev_map_background_path.is_file():
-            logger.warning(f"Specified BEV map background image not found: {config.bev_map_background_path}. Will use black background.")
-            config.bev_map_background_path = None # Reset if not found
+            # Try resolving relative to script dir as fallback
+            relative_path = script_dir / config.bev_map_background_path
+            if relative_path.is_file():
+                 logger.info(f"Found BEV background relative to script dir: {relative_path}")
+                 config.bev_map_background_path = relative_path.resolve()
+            else:
+                logger.warning(f"Specified BEV map background image not found: {config.bev_map_background_path} (also checked relative to {script_dir}). Will use black background.")
+                config.bev_map_background_path = None # Reset if not found
         else:
-            # Optionally resolve to absolute path
+            # Optionally resolve to absolute path if it exists directly
             config.bev_map_background_path = config.bev_map_background_path.resolve()
             logger.info(f"Using BEV map background image: {config.bev_map_background_path}")
+
+
+    # --- Create Output Directories if Saving Enabled --- MODIFIED
+    # Assume output directories are relative to the Current Working Directory (where main.py is run)
+    cwd = Path.cwd()
+
+    # Prediction JSON Directory
+    if config.save_predictions:
+        try:
+            output_dir = cwd / config.output_predictions_dir
+            output_dir.mkdir(parents=True, exist_ok=True)
+            config.output_predictions_dir = output_dir.resolve() # Store absolute path
+            logger.info(f"Saving predictions enabled. Output directory: {config.output_predictions_dir}")
+        except Exception as e:
+            logger.error(f"Failed to create prediction output directory {config.output_predictions_dir}: {e}. Disabling prediction saving.")
+            config.save_predictions = False
+    else:
+        logger.info("Saving predictions JSON is disabled in the configuration.")
+
+    # BEV Map Image Directory
+    if config.save_bev_maps:
+        if not config.enable_bev_map:
+            logger.warning("Saving BEV maps is enabled, but BEV map generation is disabled (enable_bev_map=False). BEV maps will not be saved.")
+            config.save_bev_maps = False
+        else:
+            try:
+                output_dir_bev = cwd / config.output_bev_maps_dir
+                output_dir_bev.mkdir(parents=True, exist_ok=True)
+                config.output_bev_maps_dir = output_dir_bev.resolve() # Store absolute path
+                logger.info(f"Saving BEV maps enabled. Output directory: {config.output_bev_maps_dir}")
+            except Exception as e:
+                logger.error(f"Failed to create BEV map output directory {config.output_bev_maps_dir}: {e}. Disabling BEV map saving.")
+                config.save_bev_maps = False
+    else:
+         logger.info("Saving BEV map images is disabled in the configuration.")
 
 
     logger.info("Configuration setup complete.")
