@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 """Functions for loading dataset information and individual frames."""
 
 import logging
@@ -7,35 +6,34 @@ from typing import Dict, List, Tuple, Optional
 import cv2
 import numpy as np
 
-from reid_poc.config import PipelineConfig, _find_scene_path, _find_image_dir # Use relative import
-from reid_poc.alias_types import CameraID, FrameData # Use relative import
-from reid_poc.utils import sorted_alphanumeric # Use relative import
+# Use relative imports
+from reid_poc.config import PipelineConfig # Keep config import
+from reid_poc.alias_types import CameraID, FrameData
+from reid_poc.utils import sorted_alphanumeric
 
 logger = logging.getLogger(__name__)
 
 def load_dataset_info(config: PipelineConfig) -> Tuple[Dict[CameraID, Path], List[str]]:
     """
-    Loads dataset structure, finds image directories for selected cameras,
-    and lists image filenames based on the first valid camera.
-    Relies on config object having been populated by setup_paths_and_config.
+    Retrieves validated image directories from the config and lists image filenames
+    based on the first valid camera found during config setup.
     """
     logger.info("--- Loading Dataset Information (Paths and Filenames) ---")
     camera_dirs: Dict[CameraID, Path] = {}
     image_filenames: List[str] = []
     found_sequence = False
 
-    # Scene path should already be determined during config setup
-    base_scene_path = _find_scene_path(config.dataset_base_path, config.selected_scene)
-    if not base_scene_path:
-        # This case should ideally be caught in config setup, but double-check
-        raise FileNotFoundError(f"Scene path for '{config.selected_scene}' could not be determined.")
-
     # Iterate through the validated cameras from the config
+    # relies on config.selected_cameras being sorted
     for cam_id in config.selected_cameras:
-        img_dir = _find_image_dir(base_scene_path, cam_id)
-        if img_dir:
-            camera_dirs[cam_id] = img_dir
+        cam_cfg = config.cameras_config.get(cam_id)
+        if cam_cfg and cam_cfg.image_dir and cam_cfg.image_dir.is_dir():
+            img_dir = cam_cfg.image_dir
+            camera_dirs[cam_id] = img_dir # Store the validated path
+            logger.debug(f"Using validated image directory for {cam_id}: {img_dir}")
+
             # Try to get filenames from this camera if not already found
+            # (Assumes config setup already determined a valid sequence source)
             if not found_sequence:
                 try:
                     current_filenames = sorted_alphanumeric([
@@ -45,24 +43,26 @@ def load_dataset_info(config: PipelineConfig) -> Tuple[Dict[CameraID, Path], Lis
                     if current_filenames:
                         image_filenames = current_filenames
                         found_sequence = True
-                        logger.info(f"Using camera '{cam_id}' ({len(image_filenames)} frames) for frame sequence.")
-                    # else: # Logged during config setup
-                        # logger.warning(f"No image files found in {img_dir} for camera {cam_id}")
+                        logger.info(f"Confirmed frame sequence using camera '{cam_id}' ({len(image_filenames)} frames).")
+                    # else: # Already logged during config setup if first attempt failed
                 except Exception as e:
-                    logger.warning(f"Error listing files for {cam_id} in {img_dir}: {e}")
-        # else: # Logged during config setup
-            # logger.warning(f"Skipping camera {cam_id}: No valid image directory found.")
+                    logger.warning(f"Error listing files for {cam_id} in {img_dir} during data loading: {e}")
+        else:
+            logger.warning(f"Camera {cam_id} listed in selected_cameras but missing valid configuration or image_dir in config.cameras_config. Skipping.")
+
 
     if not found_sequence:
-        raise RuntimeError(f"Failed to find any image files in the directories for the selected cameras: {config.selected_cameras}")
+        raise RuntimeError(f"Failed to find any image files in the validated directories for the selected cameras: {config.selected_cameras}")
     if not camera_dirs:
          raise RuntimeError(f"No valid camera data sources found for any selected camera in scene {config.selected_scene}.")
 
-    # Verify that the final list of cameras with directories matches the config list
+    # Double-check consistency (should always match if config setup is correct)
     if set(camera_dirs.keys()) != set(config.selected_cameras):
-        logger.warning(f"Mismatch between configured cameras ({config.selected_cameras}) and found directories ({list(camera_dirs.keys())}). Using cameras with found directories.")
-        # Update config in case validation somehow failed previously
-        config.selected_cameras = sorted(list(camera_dirs.keys()))
+        logger.error(f"CRITICAL INCONSISTENCY: Configured cameras ({config.selected_cameras}) don't match found directories ({list(camera_dirs.keys())}) after validation!")
+        # Update config in case validation somehow failed previously? Or raise error?
+        # Let's raise for safety, this indicates a bug in config setup.
+        raise RuntimeError("Mismatch between selected cameras and validated directories found.")
+
 
     return camera_dirs, image_filenames
 
@@ -75,18 +75,17 @@ def load_frames_for_batch(camera_dirs: Dict[CameraID, Path], filename: str) -> D
         img: FrameData = None
         if image_path.is_file():
             try:
-                # Use imdecode to handle potential path issues with special characters
                 img_bytes = np.fromfile(str(image_path), dtype=np.uint8)
                 img = cv2.imdecode(img_bytes, cv2.IMREAD_COLOR)
                 if img is None or img.size == 0:
-                    logger.warning(f"[{cam_id}] Failed to load image (imdecode returned None or empty): {image_path}")
-                    img = None # Ensure it's None if loading failed
+                    logger.warning(f"[{cam_id}] Failed to decode image (empty): {image_path}")
+                    img = None
             except Exception as e:
                 logger.error(f"[{cam_id}] Error reading image file {image_path}: {e}")
                 img = None
         else:
-            # Log only if the file is expected but missing (might happen if datasets are inconsistent)
-            # logger.debug(f"[{cam_id}] Image file not found: {image_path}") # Make this debug level
-            pass
+             # Log less frequently if file consistently missing across frames
+             # logger.debug(f"[{cam_id}] Image file not found: {image_path}")
+             pass
         current_frames[cam_id] = img
     return current_frames

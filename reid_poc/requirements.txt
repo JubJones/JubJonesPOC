@@ -8,3 +8,4 @@ scipy
 Pillow
 numpy
 matplotlib
+pyyaml
