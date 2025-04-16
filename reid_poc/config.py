@@ -310,7 +310,7 @@ def setup_paths_and_config() -> PipelineConfig:
          raise RuntimeError(f"Could not find any image files in any configured camera directory for scene {config.selected_scene} to establish frame sequence.")
 
     # Now validate all cameras defined in the YAML
-    homography_points_dir = script_dir # Assume .npz files are in reid_poc/
+    homography_points_dir = script_dir / "homography_points/"
     missing_homography_for_bev = []
 
     for cam_id, cam_data in raw_handoff_configs.items():

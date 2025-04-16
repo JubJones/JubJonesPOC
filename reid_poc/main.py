@@ -1,5 +1,3 @@
-# FILE: reid_poc/main.py
-# -*- coding: utf-8 -*-
 """Main execution script for the Multi-Camera Tracking & Re-Identification Pipeline with Handoff."""
 
 import logging
@@ -10,8 +8,7 @@ import json
 from pathlib import Path
 from datetime import datetime, timezone
 import cProfile # For profiling guidance
-import pstats # For profiling guidance
-
+import pstats   # For displaying profiling results
 import cv2
 import torch
 import numpy as np
@@ -22,7 +19,9 @@ from reid_poc.alias_types import ProcessedBatchResult, CameraID, FrameData, Glob
 from reid_poc.data_loader import load_dataset_info, load_frames_for_batch
 from reid_poc.models import load_detector, load_reid_model
 from reid_poc.tracking import initialize_trackers
-from reid_poc.pipeline import MultiCameraPipeline
+# --- MODIFIED IMPORT ---
+from pipeline_module import MultiCameraPipeline # Import from the new package
+# --- END MODIFIED IMPORT ---
 from reid_poc.visualization import (
     draw_annotations,
     display_combined_frames,
@@ -32,10 +31,11 @@ from reid_poc.visualization import (
 )
 
 # --- Setup Logging ---
+# Assuming logging is configured globally elsewhere or via setup_paths_and_config
 logger = logging.getLogger(__name__) # Get logger for this module
 
 
-# --- Function to Save Predictions JSON --- (Placeholders Filled)
+# --- Function to Save Predictions JSON --- (No changes needed from original)
 def save_predictions_to_json(
     batch_result: ProcessedBatchResult,
     frame_idx: int,
@@ -107,7 +107,7 @@ def save_predictions_to_json(
     except IOError as e:
         logger.error(f"Failed to write predictions for frame {frame_idx} to {output_filename}: {e}")
     except TypeError as e:
-         logger.error(f"JSON serialization error for frame {frame_idx}: {e}. Data sample: {str(output_data)[:500]}")
+        logger.error(f"JSON serialization error for frame {frame_idx}: {e}. Data sample: {str(output_data)[:500]}")
 
 
 # --- Function to Save BEV Map Images --- (No changes needed)
@@ -172,7 +172,7 @@ def main_logic():
         # --- 4. Initialize Trackers ---
         trackers = initialize_trackers(config.selected_cameras, config.tracker_type, config.tracker_config_path, config.device)
 
-        # --- 5. Initialize Pipeline ---
+        # --- 5. Initialize Pipeline (Uses the imported class) ---
         pipeline_instance = MultiCameraPipeline(config, detector, detector_transforms, reid_model, trackers)
 
         # --- 6. Setup Display Windows ---
@@ -215,6 +215,7 @@ def main_logic():
 
                 if process_this_frame:
                     if pipeline_instance is not None:
+                        # Calls the method from the imported MultiCameraPipeline class
                         batch_result = pipeline_instance.process_frame_batch_full(current_frames, frame_idx)
                         last_batch_result = batch_result
                         current_batch_timings = batch_result.timings
@@ -292,7 +293,7 @@ def main_logic():
                 # Save BEV maps (if enabled) - Use frame_idx-1 because idx was incremented
                 # Only save if the frame was actually processed
                 if config.save_bev_maps and (frame_idx-1) % config.frame_skip_rate == 0:
-                     # Use frame_idx-1 to match the processed frame number
+                    # Use frame_idx-1 to match the processed frame number
                     save_bev_map_images(bev_map_images_current_frame, frame_idx - 1, config)
 
                 # Tile and display
@@ -344,6 +345,7 @@ def main_logic():
         cv2.destroyAllWindows()
         for _ in range(10): cv2.waitKey(1) # Help process GUI events on some systems
 
+        # Use del for explicit cleanup if needed, though Python's GC handles most cases
         del pipeline_instance; del detector; del reid_model; del trackers; del last_batch_result; del config;
         bev_map_images_current_frame.clear()
         del preloaded_bev_background # Delete the preloaded image
@@ -356,20 +358,27 @@ def main_logic():
 
 if __name__ == "__main__":
     # --- cProfile Integration (Optional: Uncomment to enable) ---
-    # profiler = cProfile.Profile()
-    # profiler.enable()
+    enable_profiling = False # Set to True to enable profiling
+    profiler = None
+    if enable_profiling:
+        profiler = cProfile.Profile()
+        profiler.enable()
     # -----------------------------------------
 
     main_logic() # Run the main application logic
 
     # --- cProfile Results Handling (Optional: Uncomment to enable) ---
-    # profiler.disable()
-    # stats = pstats.Stats(profiler).sort_stats('cumulative') # Sort by cumulative time
-    # # Print top 30 functions by cumulative time
-    # print("\n--- cProfile Cumulative Time Results (Top 30) ---")
-    # stats.print_stats(30)
-    # # Save full stats to a file for more detailed analysis (e.g., with snakeviz)
-    # profile_output_file = "pipeline_profile.prof"
-    # stats.dump_stats(profile_output_file)
-    # print(f"Full profiling stats saved to: {profile_output_file}")
+    if enable_profiling and profiler:
+        profiler.disable()
+        stats = pstats.Stats(profiler).sort_stats('cumulative') # Sort by cumulative time
+        # Print top 30 functions by cumulative time
+        print("\n--- cProfile Cumulative Time Results (Top 30) ---")
+        stats.print_stats(30)
+        # Save full stats to a file for more detailed analysis (e.g., with snakeviz)
+        profile_output_file = "pipeline_profile.prof"
+        try:
+            stats.dump_stats(profile_output_file)
+            print(f"Full profiling stats saved to: {profile_output_file}")
+        except Exception as e:
+            print(f"Error saving profiling stats: {e}")
     # ---------------------------------------------
