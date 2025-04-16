@@ -1,10 +1,12 @@
+# FILE: reid_poc/visualization.py
+# -*- coding: utf-8 -*-
 """Functions for drawing annotations on frames and displaying combined views."""
 
 import logging
 from typing import Dict, List, Optional, Tuple
 import cv2
 import numpy as np
-from collections import Counter
+# Removed Counter import as it's no longer needed here
 from pathlib import Path
 
 # Use relative imports
@@ -13,32 +15,44 @@ from reid_poc.config import PipelineConfig # Import PipelineConfig for BEV setti
 
 logger = logging.getLogger(__name__)
 
-# Define default color (Green)
+# Define default color (Green) - Used for all dots now
 DEFAULT_COLOR = (0, 255, 0) # Green
-# Define color for ID text (Red)
+# Define color for Track ID text (Red) - BBox label
 ID_TEXT_COLOR = (0, 0, 255) # Red in BGR
-
-# REMOVED Global cache for BEV background
-
+# Define fallback color for Global ID text if not found in map
+DEFAULT_GID_TEXT_COLOR = (255, 255, 255) # White
 
 def generate_unique_color(global_id: int) -> Tuple[int, int, int]:
     """Generates a unique, deterministic color for a global ID, avoiding pure green."""
     # --- Function remains the same ---
     seed = int(global_id) * 3 + 5
-    r = (seed * 41) % 200 + 55
-    g = (seed * 17) % 200 + 55
-    b = (seed * 29) % 200 + 55
+    # Make colors generally lighter/brighter for better visibility on dark maps/backgrounds
+    r = (seed * 41) % 155 + 100 # Range 100-254
+    g = (seed * 17) % 155 + 100 # Range 100-254
+    b = (seed * 29) % 155 + 100 # Range 100-254
     color = (b, g, r) # OpenCV uses BGR
+    # Ensure not too close to pure green or pure white
+    if (abs(g - 255) < 30 and abs(r) < 30 and abs(b) < 30): # Avoid green screen color
+         g = 200
+    if (r > 230 and g > 230 and b > 230): # Avoid near white
+        r -= 30
+        g -= 30
+    color = tuple(max(0, min(255, c)) for c in color)
+    # Ensure it's not exactly the default green
     if color == DEFAULT_COLOR:
         color = (b, g - 10 if g >= 10 else g + 10, r)
         color = tuple(max(0, min(255, c)) for c in color)
+
     return color
 
+
+# Accepts pre-calculated global_id_color_map
 def draw_annotations(
     frames: Dict[CameraID, FrameData],
     processed_results: Dict[CameraID, List[TrackData]],
     handoff_triggers: List[HandoffTriggerInfo],
     frame_shapes: Dict[CameraID, Optional[Tuple[int, int]]], # Use shapes from config
+    global_id_color_map: Dict[GlobalID, Tuple[int, int, int]], # Passed parameter
     draw_bboxes: bool = True,
     show_track_id: bool = True,
     show_global_id: bool = True,
@@ -46,170 +60,141 @@ def draw_annotations(
     highlight_triggers: bool = True
 ) -> Dict[CameraID, FrameData]:
     """Draws bounding boxes, IDs, quadrant lines, and handoff triggers onto frames."""
-    # --- Function remains the same - relies on frame_shapes from config ---
+    # This function remains unchanged from the previous correct version,
+    # still using the passed map for bbox colors.
     annotated_frames: Dict[CameraID, FrameData] = {}
     default_frame_h, default_frame_w = 1080, 1920
 
-    # --- Determine colors based on GIDs present across all cameras IN THIS FRAME ---
-    global_id_counts = Counter()
-    all_global_ids_in_frame = []
-    for cam_results in processed_results.values():
-        for track_info in cam_results:
-            gid = track_info.get('global_id')
-            if gid is not None:
-                all_global_ids_in_frame.append(gid)
-    global_id_counts.update(all_global_ids_in_frame)
-
-    global_id_bbox_colors: Dict[GlobalID, Tuple[int, int, int]] = {}
-    for gid, count in global_id_counts.items():
-        if count > 1: global_id_bbox_colors[gid] = generate_unique_color(gid)
-        else: global_id_bbox_colors[gid] = DEFAULT_COLOR # Unique within frame gets default
-
-    # Find a default shape if needed
     first_valid_shape = next((shape for shape in frame_shapes.values() if shape), None)
     if first_valid_shape: default_frame_h, default_frame_w = first_valid_shape
-    else: # Fallback if no shapes available from config (should not happen after setup)
+    else:
         first_valid_frame = next((f for f in frames.values() if f is not None and f.size > 0), None)
         if first_valid_frame is not None: default_frame_h, default_frame_w = first_valid_frame.shape[:2]
 
-    # Map triggers for quick lookup
     trigger_map: Dict[TrackKey, ExitRule] = {trigger.source_track_key: trigger.rule for trigger in handoff_triggers}
 
     for cam_id, frame in frames.items():
-        # Get shape from config if possible, otherwise use frame or default
         current_h, current_w = default_frame_h, default_frame_w
         shape_from_config = frame_shapes.get(cam_id)
         if shape_from_config: current_h, current_w = shape_from_config
         elif frame is not None: current_h, current_w = frame.shape[:2]
 
-        # Handle missing frames
         if frame is None or frame.size == 0 or current_h <= 0 or current_w <= 0:
             placeholder = np.zeros((default_frame_h, default_frame_w, 3), dtype=np.uint8)
             cv2.putText(placeholder, f"No Frame ({cam_id})", (30, 50), cv2.FONT_HERSHEY_SIMPLEX, 1.2, (0, 0, 255), 2, cv2.LINE_AA)
             annotated_frames[cam_id] = placeholder
             continue
         else:
-            annotated_frame = frame.copy() # Work on a copy
+            annotated_frame = frame.copy()
 
-        # Draw Quadrants
         if draw_quadrants:
             mid_x, mid_y = current_w // 2, current_h // 2
             line_color = (100, 100, 100)
             cv2.line(annotated_frame, (mid_x, 0), (mid_x, current_h), line_color, 1)
             cv2.line(annotated_frame, (0, mid_y), (current_w, mid_y), line_color, 1)
 
-        # Draw Tracks
         results_for_cam = processed_results.get(cam_id, [])
         for track_info in results_for_cam:
             bbox = track_info.get('bbox_xyxy'); track_id = track_info.get('track_id'); global_id = track_info.get('global_id')
             if bbox is None or track_id is None: continue
             current_track_key: TrackKey = (cam_id, track_id)
 
-            try: # Validate bbox coordinates
+            try:
                 x1, y1, x2, y2 = map(int, bbox); x1, y1 = max(0, x1), max(0, y1); x2, y2 = min(current_w - 1, x2), min(current_h - 1, y2)
-                if x1 >= x2 or y1 >= y2: continue # Skip invalid boxes
+                if x1 >= x2 or y1 >= y2: continue
             except (ValueError, TypeError): logger.warning(f"[{cam_id}] Invalid bbox coordinates for T:{track_id}: {bbox}"); continue
 
-            # Determine color and thickness
-            bbox_color = global_id_bbox_colors.get(global_id, DEFAULT_COLOR) if global_id is not None else DEFAULT_COLOR
+            bbox_color = global_id_color_map.get(global_id, DEFAULT_COLOR) if global_id is not None else DEFAULT_COLOR
             thickness = 2
             triggered_rule = trigger_map.get(current_track_key) if highlight_triggers else None
-            if triggered_rule: thickness = 3 # Highlight triggered boxes
+            if triggered_rule: thickness = 3
 
-            # Draw BBox
             if draw_bboxes: cv2.rectangle(annotated_frame, (x1, y1), (x2, y2), bbox_color, thickness)
 
-            # Prepare Labels
             label_parts = []; trigger_label = ""
             if show_track_id: label_parts.append(f"T:{track_id}")
             if show_global_id: label_parts.append(f"G:{global_id if global_id is not None else '?'}")
             id_label = " ".join(label_parts)
             if triggered_rule: trigger_label = f"{cam_id} -> {triggered_rule.target_cam_id}"
 
-            # Draw Labels
             if id_label or trigger_label:
                 font_face = cv2.FONT_HERSHEY_SIMPLEX; font_scale_id = 0.8; font_scale_trigger = 0.7; thickness_text = 2;
                 text_y_pos = y1 - 10; line_height = 25
                 num_lines = (1 if id_label else 0) + (1 if trigger_label else 0)
-
-                # Adjust position if too close to top
                 if text_y_pos < line_height * num_lines: text_y_pos = y2 + line_height
 
-                # Draw Trigger Label first (if exists)
                 if trigger_label:
-                    trigger_color = (255, 255, 0) # Cyan for trigger info
+                    trigger_color = (255, 255, 0) # Cyan
                     cv2.putText(annotated_frame, trigger_label, (x1 + 2, text_y_pos), font_face, font_scale_trigger, trigger_color, thickness_text, cv2.LINE_AA)
-                    text_y_pos += line_height # Move down for next label
+                    text_y_pos += line_height
 
-                # Draw ID Label
                 if id_label:
                     cv2.putText(annotated_frame, id_label, (x1 + 2, text_y_pos), font_face, font_scale_id, ID_TEXT_COLOR, thickness_text, cv2.LINE_AA)
-
 
         annotated_frames[cam_id] = annotated_frame
     return annotated_frames
 
+
+# --- MODIFIED: Draws green dots, but uses unique color for GID text ---
 def create_single_camera_bev_map(
     camera_id: CameraID,
     results_for_cam: List[TrackData],
     config: PipelineConfig,
-    preloaded_background: Optional[np.ndarray] # ADDED: Pass preloaded background
+    preloaded_background: Optional[np.ndarray],
+    global_id_color_map: Dict[GlobalID, Tuple[int, int, int]] # Passed parameter
 ) -> FrameData:
     """
     Creates the Bird's Eye View map visualization for a single camera.
     Uses preloaded background if provided, otherwise uses black.
+    Draws GREEN dots for all points, but uses the unique color from
+    global_id_color_map for the Global ID text label.
     """
-    bev_h, bev_w = config.bev_map_display_size # Size of this individual map cell
+    bev_h, bev_w = config.bev_map_display_size
     map_scale = config.bev_map_world_scale
     offset_x, offset_y = config.bev_map_world_origin_offset_px
 
     logger.debug(f"[{camera_id}] Creating BEV Map Cell. TargetSize:{bev_w}x{bev_h}, Scale:{map_scale}, Offset:({offset_x},{offset_y})")
 
-    # --- Use preloaded background or create black background ---
+    # --- Background handling (unchanged) ---
     if preloaded_background is not None:
-        # Important: Work on a copy so drawing doesn't affect the original preloaded image
         bev_map = preloaded_background.copy()
         logger.debug(f"[{camera_id}] Using preloaded BEV background (shape: {bev_map.shape}).")
-        # Ensure it matches target size (should already be resized in main)
         if bev_map.shape[0] != bev_h or bev_map.shape[1] != bev_w:
-             logger.warning(f"[{camera_id}] Preloaded BEV background shape {bev_map.shape[:2]} doesn't match target {config.bev_map_display_size}. Resizing again.")
-             try:
-                 bev_map = cv2.resize(bev_map, (bev_w, bev_h), interpolation=cv2.INTER_AREA)
-             except Exception as resize_err:
-                 logger.error(f"[{camera_id}] Failed to resize preloaded BEV background: {resize_err}. Using black fallback.")
-                 bev_map = np.zeros((bev_h, bev_w, 3), dtype=np.uint8)
+            logger.warning(f"[{camera_id}] Preloaded BEV background shape {bev_map.shape[:2]} doesn't match target {config.bev_map_display_size}. Resizing again.")
+            try:
+                bev_map = cv2.resize(bev_map, (bev_w, bev_h), interpolation=cv2.INTER_AREA)
+            except Exception as resize_err:
+                logger.error(f"[{camera_id}] Failed to resize preloaded BEV background: {resize_err}. Using black fallback.")
+                bev_map = np.zeros((bev_h, bev_w, 3), dtype=np.uint8)
     else:
         logger.debug(f"[{camera_id}] No preloaded BEV background, using black.")
         bev_map = np.zeros((bev_h, bev_w, 3), dtype=np.uint8)
-    # --- End background handling ---
 
-    # --- Add Camera ID Text ---
+    # --- Add Camera ID Text (unchanged) ---
     cam_text = f"BEV - {camera_id}"
-    text_color = (200, 200, 200); text_pos = (15, 30)
-    cv2.putText(bev_map, cam_text, text_pos, cv2.FONT_HERSHEY_SIMPLEX, 0.8, text_color, 2, cv2.LINE_AA)
-
-    # --- Pre-calculate Global ID colors ---
-    global_id_counts = Counter([t.get('global_id') for t in results_for_cam if t.get('global_id') is not None])
-    global_id_colors: Dict[GlobalID, Tuple[int, int, int]] = {
-         gid: generate_unique_color(gid) for gid in global_id_counts # Generate unique for all plotted GIDs
-    }
+    text_color_cam_id = (200, 200, 200); text_pos = (15, 30)
+    cv2.putText(bev_map, cam_text, text_pos, cv2.FONT_HERSHEY_SIMPLEX, 0.8, text_color_cam_id, 2, cv2.LINE_AA)
 
     # --- Plot points ---
     points_drawn_count = 0
     for track_info in results_for_cam:
-        global_id = track_info.get('global_id'); map_coords = track_info.get('map_coords'); track_id = track_info.get('track_id')
-        if global_id is not None and map_coords is not None:
-            map_x, map_y = map_coords; color = global_id_colors.get(global_id, DEFAULT_COLOR)
+        global_id = track_info.get('global_id'); map_coords = track_info.get('map_coords')
+        if map_coords is not None: # Plot if map coords exist
+            map_x, map_y = map_coords
             display_x = int(map_x * map_scale + offset_x); display_y = int(map_y * map_scale + offset_y)
 
             if 0 <= display_x < bev_w and 0 <= display_y < bev_h:
-                cv2.circle(bev_map, (display_x, display_y), radius=5, color=color, thickness=-1)
-                font_face = cv2.FONT_HERSHEY_SIMPLEX; font_scale = 0.5;
-                # Choose text color based on background circle brightness
-                text_color_gid = (255, 255, 255) if sum(color) < 384 else (0,0,0)
-                cv2.putText(bev_map, str(global_id), (display_x + 8, display_y + 4), font_face, font_scale, text_color_gid, 1, cv2.LINE_AA)
+                # --- MODIFIED: Always draw dot with DEFAULT_COLOR ---
+                cv2.circle(bev_map, (display_x, display_y), radius=5, color=DEFAULT_COLOR, thickness=-1)
+
+                # Draw Global ID Text if available, using the unique color
+                if global_id is not None:
+                    font_face = cv2.FONT_HERSHEY_SIMPLEX; font_scale = 0.5;
+                    # --- MODIFIED: Get unique color for text, fallback to white ---
+                    text_color_gid = global_id_color_map.get(global_id, DEFAULT_GID_TEXT_COLOR)
+                    cv2.putText(bev_map, str(global_id), (display_x + 8, display_y + 4), font_face, font_scale, text_color_gid, 1, cv2.LINE_AA)
+
                 points_drawn_count += 1
-            # else: logger.debug(f"[{camera_id}] Skipping GID {global_id} T:{track_id}: Coords ({display_x}, {display_y}) out of BEV bounds.")
 
     logger.debug(f"[{camera_id}] BEV Map Cell: Finished plotting. Drawn {points_drawn_count} points.")
     return bev_map
@@ -224,13 +209,11 @@ def display_combined_bev_maps(
     ):
     """Combines multiple individual BEV maps into a grid and displays them."""
     if not bev_map_images:
-        # logger.warning("display_combined_bev_maps called with no images.")
-        # Optional: Display a placeholder if window exists
         try:
-             if cv2.getWindowProperty(window_name, cv2.WND_PROP_VISIBLE) >= 1:
-                  placeholder = np.zeros((target_cell_shape[0]*2, target_cell_shape[1]*2, 3), dtype=np.uint8)
-                  cv2.putText(placeholder, "No BEV Data", (50, 50), cv2.FONT_HERSHEY_SIMPLEX, 1, (255,255,255), 2)
-                  cv2.imshow(window_name, placeholder)
+            if cv2.getWindowProperty(window_name, cv2.WND_PROP_VISIBLE) >= 1:
+                placeholder = np.zeros((target_cell_shape[0]*2, target_cell_shape[1]*2, 3), dtype=np.uint8)
+                cv2.putText(placeholder, "No BEV Data", (50, 50), cv2.FONT_HERSHEY_SIMPLEX, 1, (255,255,255), 2)
+                cv2.imshow(window_name, placeholder)
         except: pass # Ignore errors if window closed
         return
 
@@ -291,12 +274,11 @@ def display_combined_frames(window_name: str, annotated_frames: Dict[CameraID, F
     valid_annotated = [item[1] for item in valid_annotated_items]
 
     if not valid_annotated:
-        # Display placeholder if window exists
         try:
-             if cv2.getWindowProperty(window_name, cv2.WND_PROP_VISIBLE) >= 1:
-                  placeholder = np.zeros((480, 640, 3), dtype=np.uint8)
-                  cv2.putText(placeholder, "No Valid Frames", (30, 50), cv2.FONT_HERSHEY_SIMPLEX, 1, (255, 255, 255), 2)
-                  cv2.imshow(window_name, placeholder)
+            if cv2.getWindowProperty(window_name, cv2.WND_PROP_VISIBLE) >= 1:
+                placeholder = np.zeros((480, 640, 3), dtype=np.uint8)
+                cv2.putText(placeholder, "No Valid Frames", (30, 50), cv2.FONT_HERSHEY_SIMPLEX, 1, (255, 255, 255), 2)
+                cv2.imshow(window_name, placeholder)
         except: pass
         return
 
@@ -337,7 +319,7 @@ def display_combined_frames(window_name: str, annotated_frames: Dict[CameraID, F
         try:
             scale = max_width / disp_w; disp_h_new = int(disp_h * scale); disp_w_new = max_width
             if disp_h_new > 0 and disp_w_new > 0:
-                 combined_display = cv2.resize(combined_display, (disp_w_new, disp_h_new), interpolation=cv2.INTER_AREA)
+                combined_display = cv2.resize(combined_display, (disp_w_new, disp_h_new), interpolation=cv2.INTER_AREA)
         except Exception as final_resize_err: logger.error(f"Failed to resize final combined display: {final_resize_err}")
 
     # Show final image

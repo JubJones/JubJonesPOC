@@ -1,3 +1,5 @@
+# FILE: reid_poc/main.py
+# -*- coding: utf-8 -*-
 """Main execution script for the Multi-Camera Tracking & Re-Identification Pipeline with Handoff."""
 
 import logging
@@ -16,7 +18,7 @@ import numpy as np
 
 # --- Local Modules ---
 from reid_poc.config import setup_paths_and_config, PipelineConfig
-from reid_poc.alias_types import ProcessedBatchResult, CameraID, FrameData
+from reid_poc.alias_types import ProcessedBatchResult, CameraID, FrameData, GlobalID # Added GlobalID
 from reid_poc.data_loader import load_dataset_info, load_frames_for_batch
 from reid_poc.models import load_detector, load_reid_model
 from reid_poc.tracking import initialize_trackers
@@ -25,7 +27,8 @@ from reid_poc.visualization import (
     draw_annotations,
     display_combined_frames,
     create_single_camera_bev_map,
-    display_combined_bev_maps
+    display_combined_bev_maps,
+    generate_unique_color # MODIFIED: Import generate_unique_color
 )
 
 # --- Setup Logging ---
@@ -114,7 +117,6 @@ def save_bev_map_images(
     config: PipelineConfig
 ):
     """Saves the generated BEV map images to files."""
-    # ... (function content remains the same) ...
     if not config.save_bev_maps or not config.output_bev_maps_dir or not config.enable_bev_map: return
     if not config.output_bev_maps_dir.is_dir(): logger.error(f"BEV map output directory does not exist: {config.output_bev_maps_dir}. Cannot save."); return
 
@@ -135,7 +137,7 @@ def main_logic():
     is_paused: bool = False
     bev_window_name: Optional[str] = None
     bev_map_images_current_frame: Dict[CameraID, FrameData] = {}
-    preloaded_bev_background: Optional[np.ndarray] = None # MODIFIED: Added variable
+    preloaded_bev_background: Optional[np.ndarray] = None
 
     detector = None; reid_model = None; trackers = None # Initialize for finally block
 
@@ -143,24 +145,23 @@ def main_logic():
         # --- 1. Configuration and Setup ---
         config = setup_paths_and_config() # Includes YAML loading, path validation etc.
 
-        # --- 1b. Preload BEV Background --- MODIFIED
+        # --- 1b. Preload BEV Background ---
         if config.enable_bev_map and config.bev_map_background_path:
-             logger.info(f"Pre-loading BEV background from: {config.bev_map_background_path}")
-             try:
-                 img = cv2.imread(str(config.bev_map_background_path))
-                 if img is not None and img.size > 0:
-                      target_h, target_w = config.bev_map_display_size
-                      preloaded_bev_background = cv2.resize(img, (target_w, target_h), interpolation=cv2.INTER_AREA)
-                      logger.info(f"Successfully loaded and resized BEV background to {config.bev_map_display_size}.")
-                 else:
-                      logger.warning(f"Failed to read BEV background image file: {config.bev_map_background_path}")
-             except Exception as e:
-                  logger.error(f"Error loading or resizing BEV background: {e}")
-             if preloaded_bev_background is None:
-                  logger.warning("Proceeding without preloaded BEV background (using black).")
+            logger.info(f"Pre-loading BEV background from: {config.bev_map_background_path}")
+            try:
+                img = cv2.imread(str(config.bev_map_background_path))
+                if img is not None and img.size > 0:
+                    target_h, target_w = config.bev_map_display_size
+                    preloaded_bev_background = cv2.resize(img, (target_w, target_h), interpolation=cv2.INTER_AREA)
+                    logger.info(f"Successfully loaded and resized BEV background to {config.bev_map_display_size}.")
+                else:
+                    logger.warning(f"Failed to read BEV background image file: {config.bev_map_background_path}")
+            except Exception as e:
+                logger.error(f"Error loading or resizing BEV background: {e}")
+            if preloaded_bev_background is None:
+                logger.warning("Proceeding without preloaded BEV background (using black).")
 
         # --- 2. Load Dataset Info ---
-        # `load_dataset_info` now uses validated paths from config
         camera_dirs, image_filenames = load_dataset_info(config)
         logger.info(f"Processing scene '{config.selected_scene}' with {len(image_filenames)} frames for cameras: {config.selected_cameras}")
 
@@ -188,9 +189,8 @@ def main_logic():
         logger.info("--- Starting Frame Processing Loop ---")
         total_frames_loaded = 0; total_frames_processed = 0; frame_idx = 0
         loop_start_time = time.perf_counter()
-        # Get frame shapes from the validated config
         frame_shapes_for_viz: Dict[CameraID, Optional[Tuple[int, int]]] = {
-             cam_id: cam_cfg.frame_shape for cam_id, cam_cfg in config.cameras_config.items()
+            cam_id: cam_cfg.frame_shape for cam_id, cam_cfg in config.cameras_config.items()
         }
         bev_layout_order: List[CameraID] = config.selected_cameras # Use sorted order from config
 
@@ -204,8 +204,8 @@ def main_logic():
             if not is_paused:
                 # --- Process Frame ---
                 if not any(f is not None and f.size > 0 for f in current_frames.values()):
-                     if frame_idx < 10: logger.warning(f"Frame {frame_idx}: No valid images loaded for '{current_filename_base}'. Skipping index.")
-                     frame_idx += 1; continue
+                    if frame_idx < 10: logger.warning(f"Frame {frame_idx}: No valid images loaded for '{current_filename_base}'. Skipping index.")
+                    frame_idx += 1; continue
                 total_frames_loaded += 1
                 process_this_frame = (frame_idx % config.frame_skip_rate == 0)
                 current_batch_timings = defaultdict(float)
@@ -231,11 +231,11 @@ def main_logic():
                 # --- Logging --- (Do this before advancing frame_idx)
                 iter_end_time = time.perf_counter(); frame_proc_time_ms = (iter_end_time - iter_start_time) * 1000; current_loop_duration = iter_end_time - loop_start_time; avg_display_fps = total_frames_loaded / current_loop_duration if current_loop_duration > 0 else 0; avg_processing_fps = total_frames_processed / current_loop_duration if current_loop_duration > 0 else 0
                 if frame_idx < 10 or frame_idx % 50 == 0 or not process_this_frame:
-                     track_count = 0; trigger_count = 0; map_coord_count = 0
-                     if last_batch_result: track_count = sum(len(tracks) for tracks in last_batch_result.results_per_camera.values()); trigger_count = len(last_batch_result.handoff_triggers); map_coord_count = sum(1 for tracks in last_batch_result.results_per_camera.values() for t in tracks if t.get('map_coords') is not None)
-                     pipeline_timing_str = ""
-                     if process_this_frame and current_batch_timings: stages = ['preprocess', 'detection', 'postproc', 'tracking', 'handoff', 'feature', 'reid', 'projection', 'total']; pipeline_timings = {k: v for k, v in current_batch_timings.items() if any(s in k for s in stages)}; pipeline_timing_str = " | Pipe(ms): " + " ".join([f"{k[:10]}={v*1000:.1f}" for k, v in sorted(pipeline_timings.items()) if v > 0.0001]) # Wider key display
-                     status = "PROC" if process_this_frame else "SKIP"; logger.info(f"Frame {frame_idx:<4} [{status}] | Iter:{frame_proc_time_ms:>6.1f}ms | AvgDisp:{avg_display_fps:5.1f} AvgProc:{avg_processing_fps:5.1f} | Trk:{track_count:<3} Trig:{trigger_count:<2} Map:{map_coord_count:<3}{pipeline_timing_str}")
+                    track_count = 0; trigger_count = 0; map_coord_count = 0
+                    if last_batch_result: track_count = sum(len(tracks) for tracks in last_batch_result.results_per_camera.values()); trigger_count = len(last_batch_result.handoff_triggers); map_coord_count = sum(1 for tracks in last_batch_result.results_per_camera.values() for t in tracks if t.get('map_coords') is not None)
+                    pipeline_timing_str = ""
+                    if process_this_frame and current_batch_timings: stages = ['preprocess', 'detection', 'postproc', 'tracking', 'handoff', 'feature', 'reid', 'projection', 'total', 'state_update']; pipeline_timings = {k: v for k, v in current_batch_timings.items() if any(s in k for s in stages)}; pipeline_timing_str = " | Pipe(ms): " + " ".join([f"{k[:10]}={v*1000:.1f}" for k, v in sorted(pipeline_timings.items()) if v > 0.0001]) # Wider key display
+                    status = "PROC" if process_this_frame else "SKIP"; logger.info(f"Frame {frame_idx:<4} [{status}] | Iter:{frame_proc_time_ms:>6.1f}ms | AvgDisp:{avg_display_fps:5.1f} AvgProc:{avg_processing_fps:5.1f} | Trk:{track_count:<3} Trig:{trigger_count:<2} Map:{map_coord_count:<3}{pipeline_timing_str}")
 
                 # --- Advance frame index ---
                 frame_idx += 1 # AFTER processing and logging for the current index
@@ -249,26 +249,50 @@ def main_logic():
                 results_to_draw = last_batch_result.results_per_camera
                 triggers_to_draw = last_batch_result.handoff_triggers
 
+            # --- MODIFIED: Calculate Global Color Map for this Frame ---
+            global_id_color_map_for_frame: Dict[GlobalID, Tuple[int, int, int]] = {}
+            if last_batch_result:
+                all_gids_in_batch = set()
+                for cam_results in last_batch_result.results_per_camera.values():
+                    for track_data in cam_results:
+                        gid = track_data.get('global_id')
+                        if gid is not None:
+                            all_gids_in_batch.add(gid)
+                # Generate colors only for GIDs present in this frame's results
+                for gid in all_gids_in_batch:
+                    # generate_unique_color imported from visualization
+                    global_id_color_map_for_frame[gid] = generate_unique_color(gid)
+
+
+            # --- MODIFIED: Pass Color Map to draw_annotations ---
             annotated_frames = draw_annotations(
                 display_frames, results_to_draw, triggers_to_draw,
-                frame_shapes_for_viz, # Pass shapes from config
+                frame_shapes_for_viz,
+                global_id_color_map_for_frame, # Pass the calculated map
                 config.draw_bounding_boxes, config.show_track_id, config.show_global_id,
                 config.draw_quadrant_lines, config.highlight_handoff_triggers
             )
 
-            # --- Create, Save, and Display Combined BEV Map --- MODIFIED BLOCK
+            # --- Create, Save, and Display Combined BEV Map ---
             if config.enable_bev_map and bev_window_name:
-                # Generate individual maps using preloaded background
+                # Generate individual maps using preloaded background AND common color map
                 for cam_id in config.selected_cameras:
                     results_this_cam = results_to_draw.get(cam_id, [])
-                    # Pass preloaded background (which might be None)
-                    bev_img = create_single_camera_bev_map(cam_id, results_this_cam, config, preloaded_bev_background) # MODIFIED CALL
+                    # --- MODIFIED: Pass Color Map to create_single_camera_bev_map ---
+                    bev_img = create_single_camera_bev_map(
+                        cam_id,
+                        results_this_cam,
+                        config,
+                        preloaded_bev_background, # Pass preloaded background (might be None)
+                        global_id_color_map_for_frame # Pass the calculated color map
+                    )
                     if bev_img is not None:
-                         bev_map_images_current_frame[cam_id] = bev_img
+                        bev_map_images_current_frame[cam_id] = bev_img
 
                 # Save BEV maps (if enabled) - Use frame_idx-1 because idx was incremented
                 # Only save if the frame was actually processed
                 if config.save_bev_maps and (frame_idx-1) % config.frame_skip_rate == 0:
+                     # Use frame_idx-1 to match the processed frame number
                     save_bev_map_images(bev_map_images_current_frame, frame_idx - 1, config)
 
                 # Tile and display
@@ -296,7 +320,7 @@ def main_logic():
             except cv2.error: main_window_closed = True # Assume closed if property check fails
             if not main_window_closed and config.enable_bev_map and bev_window_name:
                 try:
-                     if cv2.getWindowProperty(bev_window_name, cv2.WND_PROP_VISIBLE) < 1: bev_window_closed = True; logger.info(f"Combined BEV display window '{bev_window_name}' closed.")
+                    if cv2.getWindowProperty(bev_window_name, cv2.WND_PROP_VISIBLE) < 1: bev_window_closed = True; logger.info(f"Combined BEV display window '{bev_window_name}' closed.")
                 except cv2.error: bev_window_closed = True # Assume closed
             if main_window_closed or bev_window_closed: logger.info("A display window was closed. Exiting loop."); break
 
@@ -331,21 +355,21 @@ def main_logic():
 
 
 if __name__ == "__main__":
-    # --- cProfile Integration (Uncommented) ---
-    profiler = cProfile.Profile()
-    profiler.enable()
+    # --- cProfile Integration (Optional: Uncomment to enable) ---
+    # profiler = cProfile.Profile()
+    # profiler.enable()
     # -----------------------------------------
 
     main_logic() # Run the main application logic
 
-    # --- cProfile Results Handling (Uncommented) ---
-    profiler.disable()
-    stats = pstats.Stats(profiler).sort_stats('cumulative') # Sort by cumulative time
-    # Print top 30 functions by cumulative time
-    print("\n--- cProfile Cumulative Time Results (Top 30) ---")
-    stats.print_stats(30)
-    # Save full stats to a file for more detailed analysis (e.g., with snakeviz)
-    profile_output_file = "pipeline_profile.prof"
-    stats.dump_stats(profile_output_file)
-    print(f"Full profiling stats saved to: {profile_output_file}")
+    # --- cProfile Results Handling (Optional: Uncomment to enable) ---
+    # profiler.disable()
+    # stats = pstats.Stats(profiler).sort_stats('cumulative') # Sort by cumulative time
+    # # Print top 30 functions by cumulative time
+    # print("\n--- cProfile Cumulative Time Results (Top 30) ---")
+    # stats.print_stats(30)
+    # # Save full stats to a file for more detailed analysis (e.g., with snakeviz)
+    # profile_output_file = "pipeline_profile.prof"
+    # stats.dump_stats(profile_output_file)
+    # print(f"Full profiling stats saved to: {profile_output_file}")
     # ---------------------------------------------
