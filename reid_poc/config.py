@@ -10,6 +10,7 @@ from pathlib import Path
 from typing import List, Optional, Dict, Tuple, Set
 import torch
 import cv2 # Needed for frame shape detection during setup
+import numpy as np # Needed for homography matrix type hint
 
 # Attempt to locate boxmot path for default config lookup
 try:
@@ -20,9 +21,12 @@ except ImportError:
 
 # Import handoff structures from alias_types
 from reid_poc.alias_types import CameraID, CameraHandoffConfig, ExitRule
-from reid_poc.utils import sorted_alphanumeric, normalize_overlap_set # Use relative import for utils
+# Import utils relatively
+from reid_poc.utils import sorted_alphanumeric, normalize_overlap_set, load_homography_matrix
 
-logger = logging.getLogger(__name__)
+# Ensure root logger is configured (useful if this module is imported early)
+logging.basicConfig(level=logging.INFO, format='%(asctime)s [%(levelname)s] %(name)s: %(message)s')
+logger = logging.getLogger(__name__) # Use logger for this module
 
 @dataclass
 class PipelineConfig:
@@ -32,6 +36,8 @@ class PipelineConfig:
         os.getenv("MTMMC_PATH", "D:/MTMMC" if sys.platform == "win32" else "/Volumes/HDD/MTMMC"))
     reid_model_weights: Path = Path("osnet_x0_25_msmt17.pt") # Default name, path resolved later
     tracker_config_path: Optional[Path] = None # Resolved later
+    # Added: Optional path for BEV map background image
+    bev_map_background_path: Optional[Path] = None # e.g., Path("bev_map_background.png")
 
     # --- Dataset ---
     selected_scene: str = "s10"
@@ -65,6 +71,8 @@ class PipelineConfig:
     # --- Execution ---
     device: torch.device = field(init=False) # Set by get_compute_device later
     selected_cameras: List[CameraID] = field(init=False) # Derived from handoff config keys after validation
+    # Added: Dictionary to store loaded homography matrices
+    homography_matrices: Dict[CameraID, np.ndarray] = field(init=False, default_factory=dict)
 
     # --- Visualization ---
     draw_bounding_boxes: bool = True
@@ -75,9 +83,15 @@ class PipelineConfig:
     window_name: str = "Multi-Camera Tracking, Re-ID & Handoff POC"
     display_wait_ms: int = 20 # OpenCV waitKey delay (increased slightly from 1)
     max_display_width: int = 1920 # Max width for the combined display window
+    # Added: BEV Map Visualization Config
+    enable_bev_map: bool = True  # Flag to turn BEV map on/off
+    bev_map_display_size: Tuple[int, int] = (700, 1000)  # (Height, Width) of the BEV window
+    # --- ADJUST THESE VALUES ---
+    bev_map_world_scale: float = 0.5  # Pixels per unit in the world map coordinates (Adjusted based on logs)
+    bev_map_world_origin_offset_px: Tuple[int, int] = (25, 50)  # (X, Y) offset in pixels (Adjusted)
 
-    # <<< DEBUG FLAGS - Set to False for standard operation >>>
-    enable_debug_logging: bool = False # If True, would set logger level to DEBUG
+    # >>> SET THIS TO TRUE TO ENABLE DEBUG LOGS <<<
+    enable_debug_logging: bool = True # If True, would set logger level to DEBUG
     log_raw_detections: bool = False # If True, pipeline would log raw detections (needs code adjustment)
 
 
@@ -143,10 +157,20 @@ def _find_image_dir(base_scene_path: Path, cam_id: str) -> Optional[Path]:
     return None
 
 def setup_paths_and_config() -> PipelineConfig:
-    """Initializes configuration, resolves paths, defines handoff rules, and determines compute device."""
+    """Initializes configuration, resolves paths, defines handoff rules, loads homography, and determines compute device."""
     logger.info("--- Setting up Configuration and Paths ---")
     script_dir = Path(__file__).parent.resolve()
     config = PipelineConfig()
+
+    # --- IMPORTANT: Set logging level based on config EARLY ---
+    log_level = logging.DEBUG if config.enable_debug_logging else logging.INFO
+    # Configure root logger - affects all loggers unless they override
+    logging.basicConfig(level=log_level,
+                        format='%(asctime)s [%(levelname)s] %(name)s: %(message)s',
+                        datefmt='%Y-%m-%d %H:%M:%S',
+                        force=True) # Use force=True to override potential existing basicConfig
+    logger.info(f"Logging level set to: {logging.getLevelName(log_level)}")
+
     config.device = get_compute_device()
 
     # Validate frame skip rate
@@ -188,9 +212,9 @@ def setup_paths_and_config() -> PipelineConfig:
         "c13": CameraHandoffConfig(
             id="c13",
             exit_rules=[
-                # Check quadrant overlap for 'right' direction
+                 # Check quadrant overlap for 'right' direction
                 ExitRule(direction='right', target_cam_id='c09', target_entry_area='down', notes='wait; overlap c09 possible'),
-                # Check quadrant overlap for 'left' direction
+                 # Check quadrant overlap for 'left' direction
                 ExitRule(direction='left', target_cam_id='c12', target_entry_area='upper left', notes='overlap c12 possible'),
             ]
         ),
@@ -261,6 +285,25 @@ def setup_paths_and_config() -> PipelineConfig:
     config.selected_cameras = sorted(list(valid_cameras_handoff.keys())) # Update selected cameras based on validation
     logger.info(f"Final list of cameras to process: {config.selected_cameras}")
 
+    # --- Load Homography Matrices ---
+    logger.info("Loading Homography Matrices...")
+    loaded_homographies: Dict[CameraID, np.ndarray] = {}
+    homography_points_dir = script_dir # Assume .npz files are in the same dir as this script
+    for cam_id in config.selected_cameras:
+        logger.debug(f"-> Loading homography for camera: {cam_id}") # DEBUG Log camera ID
+        h_matrix = load_homography_matrix(cam_id, config.selected_scene, homography_points_dir)
+        if h_matrix is not None:
+            loaded_homographies[cam_id] = h_matrix
+            logger.debug(f"-> Successfully loaded homography for {cam_id}.") # DEBUG Log success
+        else:
+            logger.warning(f"Could not load homography matrix for camera {cam_id}. BEV plotting will be disabled for this camera.")
+            # If BEV map is essential, you might want to raise an error instead:
+            # raise RuntimeError(f"Failed to load essential homography matrix for camera {cam_id}")
+    config.homography_matrices = loaded_homographies
+    logger.info(f"Loaded {len(config.homography_matrices)} homography matrices.")
+    logger.debug(f"Loaded homography matrix keys: {list(config.homography_matrices.keys())}") # DEBUG Log keys
+
+
     # Normalize overlap sets for consistent lookups
     config.possible_overlaps = normalize_overlap_set(config.possible_overlaps)
     config.no_overlaps = normalize_overlap_set(config.no_overlaps)
@@ -282,7 +325,6 @@ def setup_paths_and_config() -> PipelineConfig:
 
     if not found_path:
         logger.warning(f"Tracker config '{tracker_filename}' not found in standard locations. Searching common config directories...")
-        # ... (fallback search logic remains the same) ...
         potential_config_dirs = { p.parent for p in potential_paths }
         found_yaml = next( (yaml_file for dir_path in potential_config_dirs if dir_path.exists() for yaml_file in dir_path.glob('*.yaml') if yaml_file.is_file()), None)
         if found_yaml:
@@ -304,11 +346,9 @@ def setup_paths_and_config() -> PipelineConfig:
             script_dir / config.reid_model_weights.name,
             Path.cwd() / config.reid_model_weights.name,
         ]
-         # Check BoxMOT path as last resort if path exists
         if BOXMOT_PATH and (BOXMOT_PATH / config.reid_model_weights.name).is_file():
              potential_reid_paths.append(BOXMOT_PATH / config.reid_model_weights.name)
 
-        # Add the original relative path again at the end
         potential_reid_paths.append(config.reid_model_weights)
 
         found_reid_path = next((p for p in potential_reid_paths if p.is_file()), None)
@@ -320,6 +360,18 @@ def setup_paths_and_config() -> PipelineConfig:
 
     logger.info(f"Using ReID weights: {config.reid_model_weights}")
 
+    # --- Resolve optional BEV background path ---
+    if config.bev_map_background_path:
+        logger.debug(f"Checking BEV background path: {config.bev_map_background_path}") # DEBUG Log path
+        if not config.bev_map_background_path.is_file():
+            logger.warning(f"Specified BEV map background image not found: {config.bev_map_background_path}. Will use black background.")
+            config.bev_map_background_path = None # Reset if not found
+        else:
+            # Optionally resolve to absolute path
+            config.bev_map_background_path = config.bev_map_background_path.resolve()
+            logger.info(f"Using BEV map background image: {config.bev_map_background_path}")
+
+
     logger.info("Configuration setup complete.")
-    # logger.info(f"Final Config: {config}") # Optional: Log full config if needed
+    # logger.debug(f"Final Config object: {config}") # Optional: Log full config if needed for deep debug
     return config

@@ -1,3 +1,4 @@
+# -*- coding: utf-8 -*-
 """Defines shared type aliases and data structures for the pipeline."""
 
 import numpy as np
@@ -12,12 +13,14 @@ TrackKey = Tuple[CameraID, TrackID]
 FeatureVector = np.ndarray
 BoundingBox = np.ndarray  # xyxy format [x1, y1, x2, y2]
 Detection = Dict[str, Any]  # Typically {'bbox_xyxy': BoundingBox, 'conf': float, 'class_id': int}
-TrackData = Dict[str, Any]  # Typically includes bbox, track_id, global_id, conf, class_id
+# Modified TrackData to include optional map coordinates
+TrackData = Dict[str, Any]  # Typically includes bbox, track_id, global_id, conf, class_id, map_coords
 FrameData = Optional[np.ndarray]  # BGR image
 Timings = Dict[str, float]
 ScaleFactors = Tuple[float, float]  # (scale_x, scale_y)
 ExitDirection = str # 'up', 'down', 'left', 'right' (represents rule trigger direction)
 QuadrantName = str # 'upper_left', 'upper_right', 'lower_left', 'lower_right'
+MapCoordinates = Optional[Tuple[float, float]] # Added: Represents (X, Y) on the BEV map
 
 # --- Handoff Configuration Structures ---
 @dataclass
