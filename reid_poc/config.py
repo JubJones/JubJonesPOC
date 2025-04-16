@@ -92,9 +92,9 @@ class PipelineConfig:
     bev_map_world_origin_offset_px: Tuple[int, int] = (25, 50)  # (X, Y) offset in pixels (Adjusted)
 
     # --- Output Configuration --- ADDED
-    save_predictions: bool = True # Enable/disable saving predictions JSON
+    save_predictions: bool = False # Enable/disable saving predictions JSON
     output_predictions_dir: Path = Path("predictions") # Directory to save JSON files
-    save_bev_maps: bool = True # Enable/disable saving BEV map images
+    save_bev_maps: bool = False # Enable/disable saving BEV map images
     output_bev_maps_dir: Path = Path("bev_maps") # Directory to save BEV map PNG files
 
     # >>> SET THIS TO TRUE TO ENABLE DEBUG LOGS <<<
