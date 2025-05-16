@@ -41,7 +41,7 @@ def mouse_callback(event, x, y, flags, param):
         # 1. Record image point (coordinates are directly from the AUTOSIZE window)
         img_pt = (float(x), float(y))
         image_points.append(img_pt)
-        logger.info(f"Added image point {len(image_points)}: ({x}, {y})")
+        logger.info(f"Added image point {len(image_points)}: {x}, {y}")
 
         # 2. Prompt user for corresponding map point via console
         while True:
